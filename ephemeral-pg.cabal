@@ -83,10 +83,12 @@ test-suite ephemeral-pg-test
   hs-source-dirs: test
   main-is: Main.hs
   build-depends:
+    QuickCheck >=2.14 && <2.16,
     base,
     ephemeral-pg,
     hasql,
     hspec >=2.11 && <2.12,
+    text,
 
   default-extensions:
     BlockArguments

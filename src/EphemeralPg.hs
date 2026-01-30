@@ -51,6 +51,7 @@ module EphemeralPg
     start,
     startCached,
     stop,
+    restart,
 
     -- * Configuration
     Config (..),
@@ -286,6 +287,47 @@ stop db = do
 
   -- Run cleanup (removes temp directories)
   dbCleanup db
+
+-- | Restart a database.
+--
+-- This stops the postgres server and starts it again, returning a new
+-- 'Database' handle with the updated process information.
+--
+-- The data directory and all database contents are preserved.
+-- This is useful for testing scenarios that require a server restart,
+-- such as configuration changes that require a restart to take effect.
+--
+-- @
+-- db <- 'start' 'defaultConfig'
+-- case db of
+--   Right database -> do
+--     -- Use database...
+--     newDb <- 'restart' database
+--     case newDb of
+--       Right database' -> -- Use restarted database...
+--       Left err -> handleError err
+--   Left err -> handleError err
+-- @
+restart :: Database -> IO (Either StartError Database)
+restart db = do
+  -- Stop postgres gracefully
+  _ <- stopPostgres (dbProcess db) ShutdownGraceful defaultShutdownTimeoutSeconds
+
+  -- Start postgres again with the same configuration
+  pgResult <-
+    startPostgres
+      defaultConfig
+      (dbDataDirectory db)
+      (dbSocketDirectory db)
+      (dbPort db)
+      (dbUser db)
+
+  case pgResult of
+    Left err -> pure $ Left err
+    Right newProcess ->
+      pure $
+        Right $
+          db {dbProcess = newProcess}
 
 -- | Like 'with' but uses initdb caching for faster startup.
 --
