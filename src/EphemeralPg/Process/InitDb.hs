@@ -8,7 +8,6 @@ module EphemeralPg.Process.InitDb
   )
 where
 
-import Data.Monoid (Last (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T

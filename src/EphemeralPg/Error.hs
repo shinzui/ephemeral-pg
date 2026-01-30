@@ -1,7 +1,14 @@
+{-# LANGUAGE NoFieldSelectors #-}
+{-# OPTIONS_GHC -Wno-partial-fields #-}
+
 -- | Error types for ephemeral-pg.
 --
 -- This module provides a rich error hierarchy for diagnosing failures
 -- when starting or stopping temporary PostgreSQL databases.
+--
+-- Note: We use record syntax with sum types for structured error data.
+-- The NoFieldSelectors extension prevents generation of partial field
+-- accessor functions.
 module EphemeralPg.Error
   ( -- * Top-level errors
     StartError (..),
