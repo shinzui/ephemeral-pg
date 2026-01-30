@@ -12,6 +12,8 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, mask_, try)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (throwE)
 import Data.Function ((&))
 import Data.Monoid (Last (..))
 import Data.Text (Text)
@@ -29,6 +31,7 @@ import EphemeralPg.Error
     StopError (..),
     TimeoutError (..),
   )
+import EphemeralPg.Internal.Except (liftE, liftMaybe, onError, runStartup)
 import EphemeralPg.Process (findExecutable)
 import System.Exit (ExitCode (..))
 import System.Posix.Signals (sigINT, sigKILL, sigQUIT, sigTERM, signalProcess)
@@ -60,71 +63,67 @@ startPostgres ::
   -- | Username
   Text ->
   IO (Either StartError PostgresProcess)
-startPostgres config dataDir socketDir port username = do
+startPostgres config dataDir socketDir port username = runStartup $ do
   -- Find postgres executable
-  mPostgres <- findExecutable "postgres"
-  case mPostgres of
-    Nothing -> pure $ Left $ PostgresStartError PostgresNotFound
-    Just postgresPath -> do
-      -- Build arguments
-      let args = buildPostgresArgs config dataDir socketDir port username
+  postgresPath <-
+    liftMaybe (PostgresStartError PostgresNotFound)
+      =<< liftIO (findExecutable "postgres")
 
-      -- Configure process
-      let processConfig =
-            proc postgresPath (map T.unpack args)
-              & setStdin nullStream
-              & setStdout nullStream
-              & setStderr nullStream
-              & setCreateGroup True -- So we can signal the whole group
+  -- Build arguments and process config
+  let args = buildPostgresArgs config dataDir socketDir port username
+  let processConfig =
+        proc postgresPath (map T.unpack args)
+          & setStdin nullStream
+          & setStdout nullStream
+          & setStderr nullStream
+          & setCreateGroup True -- So we can signal the whole group
 
-      -- Start the process
-      result <- try $ startProcess processConfig
-      case result of
-        Left (ex :: SomeException) ->
-          pure $
-            Left $
-              PostgresStartError $
-                PostgresStartFailed
-                  { pgExitCode = ExitFailure 1,
-                    pgStdout = "",
-                    pgStderr = T.pack $ show ex,
-                    pgCommand = T.unwords (T.pack postgresPath : args)
-                  }
-        Right process -> do
-          -- Get the PID
-          let pHandle = unsafeProcessHandle process
-          mPid <- getPid pHandle
-          case mPid of
-            Nothing ->
-              pure $
-                Left $
-                  PostgresStartError $
-                    PostgresStartFailed
-                      { pgExitCode = ExitFailure 1,
-                        pgStdout = "",
-                        pgStderr = "Could not get process ID",
-                        pgCommand = T.unwords (T.pack postgresPath : args)
-                      }
-            Just pid -> do
-              let postgresProcess =
-                    PostgresProcess
-                      { postgresProcess = process,
-                        postgresPid = CPid $ fromIntegral pid
-                      }
+  -- Start the process
+  process <-
+    liftIO (try $ startProcess processConfig) >>= \case
+      Left (ex :: SomeException) ->
+        throwE $
+          PostgresStartError $
+            PostgresStartFailed
+              { pgExitCode = ExitFailure 1,
+                pgStdout = "",
+                pgStderr = T.pack $ show ex,
+                pgCommand = T.unwords (T.pack postgresPath : args)
+              }
+      Right p -> pure p
 
-              -- Wait for the server to be ready
-              let timeoutSecs =
-                    maybe defaultConnectionTimeoutSeconds id $
-                      getLast (configConnectionTimeoutSeconds config)
-              waitResult <- waitForPostgres socketDir port timeoutSecs
+  -- Get the PID
+  let pHandle = unsafeProcessHandle process
+  pid <-
+    liftMaybe
+      ( PostgresStartError $
+          PostgresStartFailed
+            { pgExitCode = ExitFailure 1,
+              pgStdout = "",
+              pgStderr = "Could not get process ID",
+              pgCommand = T.unwords (T.pack postgresPath : args)
+            }
+      )
+      =<< liftIO (getPid pHandle)
 
-              case waitResult of
-                Left err -> do
-                  -- Kill the server since it didn't start properly
-                  _ <- stopPostgres postgresProcess ShutdownImmediate 5
-                  pure $ Left err
-                Right () ->
-                  pure $ Right postgresProcess
+  let postgresProcess =
+        PostgresProcess
+          { postgresProcess = process,
+            postgresPid = CPid $ fromIntegral pid
+          }
+
+  -- Wait for the server to be ready
+  let timeoutSecs =
+        maybe defaultConnectionTimeoutSeconds id $
+          getLast (configConnectionTimeoutSeconds config)
+
+  liftE (waitForPostgres socketDir port timeoutSecs)
+    `onError` do
+      -- Kill the server since it didn't start properly
+      _ <- stopPostgres postgresProcess ShutdownImmediate 5
+      pure ()
+
+  pure postgresProcess
 
 -- | Build postgres command line arguments.
 buildPostgresArgs :: Config -> FilePath -> FilePath -> Word16 -> Text -> [Text]
@@ -144,7 +143,7 @@ buildPostgresArgs config dataDir socketDir port _username =
 waitForPostgres :: FilePath -> Word16 -> Int -> IO (Either StartError ())
 waitForPostgres socketDir port timeoutSecs = do
   let deadline = timeoutSecs * 1000000 -- Convert to microseconds
-  result <- timeout deadline $ waitLoop
+  result <- timeout deadline waitLoop
   case result of
     Nothing ->
       pure $

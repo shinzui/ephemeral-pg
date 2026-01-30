@@ -77,7 +77,10 @@ where
 
 import Control.Exception (mask, onException)
 import Control.Monad (when)
+import Control.Monad.IO.Class (liftIO)
 import Data.Monoid (Last (..))
+import Data.Text (Text)
+import Data.Word (Word16)
 import EphemeralPg.Config
   ( Config (..),
     DirectoryConfig (..),
@@ -122,6 +125,7 @@ import EphemeralPg.Internal.Directory
     resolveDirectory,
     retryRemoveDirectory,
   )
+import EphemeralPg.Internal.Except (liftE, onError, runStartup)
 import EphemeralPg.Internal.Port (findFreePort)
 import EphemeralPg.Process (getCurrentUser)
 import EphemeralPg.Process.CreateDb (runCreateDb)
@@ -172,104 +176,94 @@ withConfig config action = mask $ \restore -> do
 --   Left err -> handleError err
 -- @
 start :: Config -> IO (Either StartError Database)
-start config = do
-  -- Resolve temp root
+start config = runStartup $ do
   let mTempRoot = getLast (configTemporaryRoot config)
 
   -- Create data directory
-  dataResult <-
-    resolveDirectory
-      (configDataDirectory config)
-      mTempRoot
-      "data"
-      createTempDataDirectory
+  (dataDir, dataDirIsTemp) <-
+    liftE $
+      resolveDirectory
+        (configDataDirectory config)
+        mTempRoot
+        "data"
+        createTempDataDirectory
 
-  case dataResult of
-    Left err -> pure $ Left err
-    Right (dataDir, dataDirIsTemp) -> do
-      -- Create socket directory
-      socketResult <-
-        resolveDirectory
+  -- Create socket directory
+  (socketDir, socketDirIsTemp) <-
+    liftE
+      ( resolveDirectory
           (configSocketDirectory config)
           mTempRoot
           "socket"
           createTempSocketDirectory
+      )
+      `onError` when dataDirIsTemp (removeDirectoryIfExists dataDir)
 
-      case socketResult of
-        Left err -> do
-          -- Clean up data directory if we created it
-          when dataDirIsTemp $ removeDirectoryIfExists dataDir
-          pure $ Left err
-        Right (socketDir, socketDirIsTemp) -> do
-          -- Get port
-          portResult <- case getLast (configPort config) of
-            Just p -> pure $ Right p
-            Nothing -> findFreePort
+  -- Get port
+  p <-
+    liftE (getPort config)
+      `onError` cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
 
-          case portResult of
-            Left err -> do
-              cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
-              pure $ Left err
-            Right p -> do
-              -- Get username
-              username <- case configUser config of
-                "" -> getCurrentUser
-                u -> pure u
+  -- Get username
+  username <- liftIO $ getUsername config
 
-              -- Run initdb
-              initResult <- runInitDb config dataDir
+  -- Run initdb
+  () <-
+    liftE (runInitDb config dataDir)
+      `onError` cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
 
-              case initResult of
-                Left err -> do
-                  cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
-                  pure $ Left err
-                Right () -> do
-                  -- Start postgres
-                  pgResult <- startPostgres config dataDir socketDir p username
+  -- Start postgres
+  pgProcess <-
+    liftE (startPostgres config dataDir socketDir p username)
+      `onError` cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
 
-                  case pgResult of
-                    Left err -> do
-                      cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
-                      pure $ Left err
-                    Right pgProcess -> do
-                      -- Create database
-                      let dbName = configDatabaseName config
-                      createResult <- runCreateDb config socketDir p username dbName
+  -- Create database
+  let dbName = configDatabaseName config
+  () <-
+    liftE (runCreateDb config socketDir p username dbName)
+      `onError` do
+        _ <- stopPostgres pgProcess ShutdownImmediate 5
+        cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
 
-                      case createResult of
-                        Left err -> do
-                          _ <- stopPostgres pgProcess ShutdownImmediate 5
-                          cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
-                          pure $ Left err
-                        Right () -> do
-                          -- Build cleanup action
-                          let cleanupAction = do
-                                when dataDirIsTemp $ do
-                                  -- Use retry to handle pg_stat race
-                                  _ <- retryRemoveDirectory dataDir 5 100000
-                                  pure ()
-                                when socketDirIsTemp $
-                                  removeDirectoryIfExists socketDir
+  -- Build cleanup action
+  let cleanupAction = do
+        when dataDirIsTemp $ do
+          -- Use retry to handle pg_stat race
+          _ <- retryRemoveDirectory dataDir 5 100000
+          pure ()
+        when socketDirIsTemp $
+          removeDirectoryIfExists socketDir
 
-                          pure $
-                            Right $
-                              Database
-                                { dbDataDirectory = dataDir,
-                                  dbSocketDirectory = socketDir,
-                                  dbPort = p,
-                                  dbDatabaseName = dbName,
-                                  dbUser = username,
-                                  dbPassword = configPassword config,
-                                  dbProcess = pgProcess,
-                                  dbCleanup = cleanupAction,
-                                  dbDataDirIsTemp = dataDirIsTemp,
-                                  dbSocketDirIsTemp = socketDirIsTemp
-                                }
+  pure $
+    Database
+      { dbDataDirectory = dataDir,
+        dbSocketDirectory = socketDir,
+        dbPort = p,
+        dbDatabaseName = dbName,
+        dbUser = username,
+        dbPassword = configPassword config,
+        dbProcess = pgProcess,
+        dbCleanup = cleanupAction,
+        dbDataDirIsTemp = dataDirIsTemp,
+        dbSocketDirIsTemp = socketDirIsTemp
+      }
   where
     cleanup :: Bool -> FilePath -> Bool -> FilePath -> IO ()
     cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir = do
       when dataDirIsTemp $ removeDirectoryIfExists dataDir
       when socketDirIsTemp $ removeDirectoryIfExists socketDir
+
+-- | Get port from config or find a free one.
+getPort :: Config -> IO (Either StartError Word16)
+getPort config = case getLast (configPort config) of
+  Just p -> pure $ Right p
+  Nothing -> findFreePort
+
+-- | Get username from config or current user.
+getUsername :: Config -> IO Text
+getUsername config = case configUser config of
+  "" -> getCurrentUser
+  u -> pure u
 
 -- | Stop a database and clean up resources.
 --
@@ -309,25 +303,23 @@ stop db = do
 --   Left err -> handleError err
 -- @
 restart :: Database -> IO (Either StartError Database)
-restart db = do
+restart db = runStartup $ do
   -- Stop postgres gracefully
-  _ <- stopPostgres (dbProcess db) ShutdownGraceful defaultShutdownTimeoutSeconds
+  liftIO $ do
+    _ <- stopPostgres (dbProcess db) ShutdownGraceful defaultShutdownTimeoutSeconds
+    pure ()
 
   -- Start postgres again with the same configuration
-  pgResult <-
-    startPostgres
-      defaultConfig
-      (dbDataDirectory db)
-      (dbSocketDirectory db)
-      (dbPort db)
-      (dbUser db)
+  newProcess <-
+    liftE $
+      startPostgres
+        defaultConfig
+        (dbDataDirectory db)
+        (dbSocketDirectory db)
+        (dbPort db)
+        (dbUser db)
 
-  case pgResult of
-    Left err -> pure $ Left err
-    Right newProcess ->
-      pure $
-        Right $
-          db {dbProcess = newProcess}
+  pure $ db {dbProcess = newProcess}
 
 -- | Like 'with' but uses initdb caching for faster startup.
 --
@@ -434,77 +426,62 @@ startAndCache config cacheConfig cacheKey = do
 
 -- | Continue startup from an existing data directory.
 continueStartup :: Config -> FilePath -> Bool -> IO (Either StartError Database)
-continueStartup config dataDir dataDirIsTemp = do
+continueStartup config dataDir dataDirIsTemp = runStartup $ do
   let mTempRoot = getLast (configTemporaryRoot config)
 
   -- Create socket directory
-  socketResult <-
-    resolveDirectory
-      (configSocketDirectory config)
-      mTempRoot
-      "socket"
-      createTempSocketDirectory
+  (socketDir, socketDirIsTemp) <-
+    liftE
+      ( resolveDirectory
+          (configSocketDirectory config)
+          mTempRoot
+          "socket"
+          createTempSocketDirectory
+      )
+      `onError` when dataDirIsTemp (removeDirectoryIfExists dataDir)
 
-  case socketResult of
-    Left err -> do
-      when dataDirIsTemp $ removeDirectoryIfExists dataDir
-      pure $ Left err
-    Right (socketDir, socketDirIsTemp) -> do
-      -- Get port
-      portResult <- case getLast (configPort config) of
-        Just p -> pure $ Right p
-        Nothing -> findFreePort
+  -- Get port
+  p <-
+    liftE (getPort config)
+      `onError` cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
 
-      case portResult of
-        Left err -> do
-          cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
-          pure $ Left err
-        Right p -> do
-          -- Get username
-          username <- case configUser config of
-            "" -> getCurrentUser
-            u -> pure u
+  -- Get username
+  username <- liftIO $ getUsername config
 
-          -- Start postgres (initdb already done)
-          pgResult <- startPostgres config dataDir socketDir p username
+  -- Start postgres (initdb already done)
+  pgProcess <-
+    liftE (startPostgres config dataDir socketDir p username)
+      `onError` cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
 
-          case pgResult of
-            Left err -> do
-              cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
-              pure $ Left err
-            Right pgProcess -> do
-              -- Create database
-              let dbName = configDatabaseName config
-              createResult <- runCreateDb config socketDir p username dbName
+  -- Create database
+  let dbName = configDatabaseName config
+  () <-
+    liftE (runCreateDb config socketDir p username dbName)
+      `onError` do
+        _ <- stopPostgres pgProcess ShutdownImmediate 5
+        cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
 
-              case createResult of
-                Left err -> do
-                  _ <- stopPostgres pgProcess ShutdownImmediate 5
-                  cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
-                  pure $ Left err
-                Right () -> do
-                  -- Build cleanup action
-                  let cleanupAction = do
-                        when dataDirIsTemp $ do
-                          _ <- retryRemoveDirectory dataDir 5 100000
-                          pure ()
-                        when socketDirIsTemp $
-                          removeDirectoryIfExists socketDir
+  -- Build cleanup action
+  let cleanupAction = do
+        when dataDirIsTemp $ do
+          _ <- retryRemoveDirectory dataDir 5 100000
+          pure ()
+        when socketDirIsTemp $
+          removeDirectoryIfExists socketDir
 
-                  pure $
-                    Right $
-                      Database
-                        { dbDataDirectory = dataDir,
-                          dbSocketDirectory = socketDir,
-                          dbPort = p,
-                          dbDatabaseName = dbName,
-                          dbUser = username,
-                          dbPassword = configPassword config,
-                          dbProcess = pgProcess,
-                          dbCleanup = cleanupAction,
-                          dbDataDirIsTemp = dataDirIsTemp,
-                          dbSocketDirIsTemp = socketDirIsTemp
-                        }
+  pure $
+    Database
+      { dbDataDirectory = dataDir,
+        dbSocketDirectory = socketDir,
+        dbPort = p,
+        dbDatabaseName = dbName,
+        dbUser = username,
+        dbPassword = configPassword config,
+        dbProcess = pgProcess,
+        dbCleanup = cleanupAction,
+        dbDataDirIsTemp = dataDirIsTemp,
+        dbSocketDirIsTemp = socketDirIsTemp
+      }
   where
     cleanupDirs :: Bool -> FilePath -> Bool -> FilePath -> IO ()
     cleanupDirs dataDirIsTemp' dataDir' socketDirIsTemp' socketDir' = do
