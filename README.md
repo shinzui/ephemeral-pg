@@ -93,8 +93,8 @@ import EphemeralPg.Config qualified as Config
 customTest :: IO ()
 customTest = do
   let config = Pg.defaultConfig
-        { Config.configDatabaseName = "mytest"
-        , Config.configPostgresSettings =
+        { Config.databaseName = "mytest"
+        , Config.postgresSettings =
             [ ("log_statement", "'all'")
             , ("log_min_duration_statement", "0")
             ]
@@ -173,7 +173,7 @@ manualLifecycle = do
     Left err -> putStrLn $ Pg.renderStartError err
     Right db -> do
       -- Use the database...
-      putStrLn $ "Database running on port: " <> show (Pg.port db)
+      putStrLn $ "Database running on port: " <> show db.port
 
       -- Clean up when done
       Pg.stop db
@@ -206,7 +206,7 @@ import EphemeralPg qualified as Pg
 restartTest :: IO ()
 restartTest = do
   result <- Pg.with \db -> do
-    let port1 = Pg.port db
+    let port1 = db.port
 
     -- Restart the server
     restartResult <- Pg.restart db
@@ -214,7 +214,7 @@ restartTest = do
       Left err -> fail $ "Restart failed: " <> show err
       Right db' -> do
         -- Server restarted, data preserved
-        let port2 = Pg.port db'
+        let port2 = db'.port
         -- Port remains the same
         pure (port1 == port2)
 
@@ -290,15 +290,15 @@ dumpTest = do
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `configDatabaseName` | `Text` | `"test"` | Name of the database to create |
-| `configUser` | `Text` | Current user | PostgreSQL username |
-| `configPassword` | `Text` | `""` | PostgreSQL password (empty = trust auth) |
-| `configPort` | `Last Int` | Auto-assigned | Port number (finds free port if not specified) |
-| `configDataDirectory` | `DirectoryConfig` | Temporary | Data directory location |
-| `configSocketDirectory` | `DirectoryConfig` | Temporary | Unix socket directory |
-| `configTemporaryRoot` | `Last FilePath` | System temp | Root for temporary directories |
-| `configPostgresSettings` | `[(Text, Text)]` | Optimized defaults | postgresql.conf settings |
-| `configInitDbArgs` | `[Text]` | `[]` | Additional initdb arguments |
+| `databaseName` | `Text` | `"postgres"` | Name of the database to create |
+| `user` | `Text` | Current user | PostgreSQL username |
+| `password` | `Maybe Text` | `Nothing` | PostgreSQL password (`Nothing` = trust auth) |
+| `port` | `Last Word16` | Auto-assigned | Port number (finds free port if not specified) |
+| `dataDirectory` | `DirectoryConfig` | Temporary | Data directory location |
+| `socketDirectory` | `DirectoryConfig` | Temporary | Unix socket directory |
+| `temporaryRoot` | `Last FilePath` | System temp | Root for temporary directories |
+| `postgresSettings` | `[(Text, Text)]` | Optimized defaults | postgresql.conf settings |
+| `initDbArgs` | `[Text]` | `[]` | Additional initdb arguments |
 
 ### Pre-configured Configs
 
@@ -341,14 +341,21 @@ restart :: Database -> IO (Either StartError Database)
 
 ### Database Handle
 
+Access database fields using dot syntax (requires `OverloadedRecordDot`):
+
+```haskell
+db.port             :: Word16       -- Port number
+db.databaseName     :: Text         -- Database name
+db.user             :: Text         -- Username
+db.dataDirectory    :: FilePath     -- Data directory path
+db.socketDirectory  :: FilePath     -- Socket directory path
+```
+
+Computed connection helpers:
+
 ```haskell
 connectionSettings :: Database -> Settings  -- hasql Settings
 connectionString :: Database -> Text         -- libpq connection string
-dataDirectory :: Database -> FilePath
-socketDirectory :: Database -> FilePath
-port :: Database -> Int
-databaseName :: Database -> Text
-user :: Database -> Text
 ```
 
 ### Cache Management
