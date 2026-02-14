@@ -8,8 +8,7 @@ description:
 
 license: BSD-3-Clause
 license-file: LICENSE
-author: Your Name
-maintainer: your.email@example.com
+author: Nadeem Bitar
 category: Database, Testing
 build-type: Simple
 extra-doc-files:
@@ -18,7 +17,7 @@ extra-doc-files:
 
 source-repository head
   type: git
-  location: https://github.com/yourusername/ephemeral-pg
+  location: https://github.com/shinzui/ephemeral-pg
 
 common warnings
   ghc-options:
