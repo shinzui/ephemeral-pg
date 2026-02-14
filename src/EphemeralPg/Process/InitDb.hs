@@ -26,7 +26,7 @@ runInitDb config dataDir = do
     Nothing -> pure $ Left $ InitDbError InitDbNotFound
     Just initDbPath -> do
       -- Get username
-      username <- case configUser config of
+      username <- case config.user of
         "" -> getCurrentUser
         u -> pure u
 
@@ -46,10 +46,10 @@ runInitDb config dataDir = do
             Left $
               InitDbError $
                 InitDbFailed
-                  { initDbExitCode = exitCode,
-                    initDbStdout = stdout,
-                    initDbStderr = stderr,
-                    initDbCommand = T.unwords (T.pack initDbPath : args)
+                  { exitCode,
+                    stdout,
+                    stderr,
+                    command = T.unwords (T.pack initDbPath : args)
                   }
 
 -- | Build initdb command line arguments.
@@ -58,13 +58,13 @@ buildInitDbArgs config dataDir username =
   [ "--pgdata=" <> T.pack dataDir,
     "--username=" <> username
   ]
-    <> configInitDbArgs config
+    <> config.initDbArgs
 
 -- | Write postgresql.conf with the configured settings.
 writePostgresConf :: Config -> FilePath -> IO ()
 writePostgresConf config dataDir = do
   let confPath = dataDir </> "postgresql.conf"
-  let settings = configPostgresSettings config
+  let settings = config.postgresSettings
   let content = T.unlines $ map formatSetting settings
   T.appendFile confPath ("\n# ephemeral-pg settings\n" <> content)
   where

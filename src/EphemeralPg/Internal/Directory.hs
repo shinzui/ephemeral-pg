@@ -99,9 +99,9 @@ validateSocketPath socketDir = do
     Left $
       ConfigError $
         SocketPathTooLong
-          { socketPath = socketDir,
-            socketPathLength = estimatedLen,
-            socketPathMaxLength = maxSocketPathLength
+          { path = socketDir,
+            pathLength = estimatedLen,
+            pathMaxLength = maxSocketPathLength
           }
 
 -- | Estimate the full socket path length.

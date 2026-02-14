@@ -1,3 +1,0 @@
-packages: .
--- Use local hasql for the newer Settings API (1.10+)
-optional-packages: /Users/shinzui/Keikaku/hub/haskell/hasql/hasql.cabal

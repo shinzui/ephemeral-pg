@@ -9,6 +9,7 @@ description:
 license: BSD-3-Clause
 license-file: LICENSE
 author: Nadeem Bitar
+maintainer: Nadeem Bitar
 category: Database, Testing
 build-type: Simple
 extra-doc-files:
@@ -26,7 +27,6 @@ common warnings
     -Widentities
     -Wincomplete-record-updates
     -Wincomplete-uni-patterns
-    -Wpartial-fields
     -Wredundant-constraints
     -Wunused-packages
 
@@ -59,7 +59,7 @@ library
     directory >=1.3 && <1.4,
     filepath >=1.4 && <1.6,
     hashable >=1.4 && <1.6,
-    hasql >=1.10,
+    hasql >=1.10 && <1.11,
     network >=3.1 && <3.3,
     process >=1.6 && <1.8,
     temporary >=1.3 && <1.4,
@@ -72,7 +72,10 @@ library
     BlockArguments
     DeriveAnyClass
     DerivingStrategies
+    DuplicateRecordFields
     LambdaCase
+    NoFieldSelectors
+    OverloadedRecordDot
     OverloadedStrings
     RecordWildCards
     StrictData
@@ -93,4 +96,6 @@ test-suite ephemeral-pg-test
 
   default-extensions:
     BlockArguments
+    DuplicateRecordFields
+    OverloadedRecordDot
     OverloadedStrings

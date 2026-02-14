@@ -61,20 +61,20 @@ import System.Process.Typed (byteStringOutput, proc, readProcess, setStderr, set
 -- | A cache key uniquely identifies a cached initdb cluster.
 data CacheKey = CacheKey
   { -- | PostgreSQL major version (e.g., "17")
-    cacheKeyPgVersion :: Text,
+    pgVersion :: Text,
     -- | Hash of configuration that affects initdb output
-    cacheKeyConfigHash :: Text
+    configHash :: Text
   }
   deriving stock (Eq, Show)
 
 -- | Configuration for the cache system.
 data CacheConfig = CacheConfig
   { -- | Root directory for cache (default: ~/.ephemeral-pg)
-    cacheConfigRoot :: Maybe FilePath,
+    root :: Maybe FilePath,
     -- | Copy-on-write capability (detected if Nothing)
-    cacheConfigCow :: Maybe CowCapability,
+    cow :: Maybe CowCapability,
     -- | Whether to use caching at all
-    cacheConfigEnabled :: Bool
+    enabled :: Bool
   }
   deriving stock (Eq, Show)
 
@@ -82,9 +82,9 @@ data CacheConfig = CacheConfig
 defaultCacheConfig :: CacheConfig
 defaultCacheConfig =
   CacheConfig
-    { cacheConfigRoot = Nothing,
-      cacheConfigCow = Nothing,
-      cacheConfigEnabled = True
+    { root = Nothing,
+      cow = Nothing,
+      enabled = True
     }
 
 -- | Get the cache root directory.
@@ -92,14 +92,14 @@ defaultCacheConfig =
 -- Uses XDG_CACHE_HOME if available, otherwise ~/.cache/ephemeral-pg
 getCacheRoot :: Maybe FilePath -> IO FilePath
 getCacheRoot mRoot = case mRoot of
-  Just root -> pure root
+  Just r -> pure r
   Nothing -> getXdgDirectory XdgCache "ephemeral-pg"
 
 -- | Ensure the cache directory structure exists.
 ensureCacheDirectory :: Maybe FilePath -> IO FilePath
 ensureCacheDirectory mRoot = do
-  root <- getCacheRoot mRoot
-  let cacheDir = root </> "cache"
+  r <- getCacheRoot mRoot
+  let cacheDir = r </> "cache"
   createDirectoryIfMissing True cacheDir
   pure cacheDir
 
@@ -147,23 +147,23 @@ getCacheKey config = do
       -- Hash the configuration elements that affect initdb output
       let configStr =
             T.unlines
-              [ T.unwords $ configInitDbArgs config,
-                T.unlines $ map (\(k, v) -> k <> "=" <> v) $ configPostgresSettings config,
-                configUser config
+              [ T.unwords config.initDbArgs,
+                T.unlines $ map (\(k, v) -> k <> "=" <> v) config.postgresSettings,
+                config.user
               ]
-      let configHash = T.pack $ show $ abs $ hash (T.unpack configStr)
+      let cfgHash = T.pack $ show $ abs $ hash (T.unpack configStr)
       pure $
         Right $
           CacheKey
-            { cacheKeyPgVersion = version,
-              cacheKeyConfigHash = configHash
+            { pgVersion = version,
+              configHash = cfgHash
             }
 
 -- | Get the directory path for a given cache key.
 getCacheDirectory :: CacheKey -> Maybe FilePath -> IO FilePath
 getCacheDirectory key mRoot = do
   cacheDir <- ensureCacheDirectory mRoot
-  let keyDir = T.unpack (cacheKeyPgVersion key) <> "-" <> T.unpack (cacheKeyConfigHash key)
+  let keyDir = T.unpack key.pgVersion <> "-" <> T.unpack key.configHash
   pure $ cacheDir </> keyDir
 
 -- | Check if a cache exists for the given key.
@@ -246,10 +246,10 @@ cleanupRuntimeFiles dataDir = do
   mapM_ removeIfExists runtimeFiles
   where
     removeIfExists :: FilePath -> IO ()
-    removeIfExists path = do
-      exists <- doesFileExist path
+    removeIfExists fp = do
+      exists <- doesFileExist fp
       if exists
-        then removeFile path `catch_` pure ()
+        then removeFile fp `catch_` pure ()
         else pure ()
 
     catch_ :: IO a -> IO a -> IO a

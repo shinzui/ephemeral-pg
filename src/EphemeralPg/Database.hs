@@ -10,13 +10,6 @@ module EphemeralPg.Database
     -- * Connection information
     connectionSettings,
     connectionString,
-
-    -- * Accessors
-    dataDirectory,
-    socketDirectory,
-    port,
-    databaseName,
-    user,
   )
 where
 
@@ -30,14 +23,14 @@ import System.Process.Typed (Process)
 -- | Handle to a running PostgreSQL server process.
 data PostgresProcess = PostgresProcess
   { -- | The typed-process handle
-    postgresProcess :: Process () () (),
+    process :: Process () () (),
     -- | Process ID for signal handling
-    postgresPid :: CPid
+    pid :: CPid
   }
 
 instance Show PostgresProcess where
-  show PostgresProcess {postgresPid} =
-    "PostgresProcess { pid = " <> show postgresPid <> " }"
+  show pp =
+    "PostgresProcess { pid = " <> show pp.pid <> " }"
 
 -- | A running PostgreSQL database instance.
 --
@@ -45,37 +38,37 @@ instance Show PostgresProcess where
 -- ready to accept connections immediately after creation.
 data Database = Database
   { -- | Path to the PostgreSQL data directory
-    dbDataDirectory :: FilePath,
+    dataDirectory :: FilePath,
     -- | Path to the Unix socket directory
-    dbSocketDirectory :: FilePath,
+    socketDirectory :: FilePath,
     -- | Port number the server is listening on
-    dbPort :: Word16,
+    port :: Word16,
     -- | Name of the database
-    dbDatabaseName :: Text,
+    databaseName :: Text,
     -- | Username for connections
-    dbUser :: Text,
+    user :: Text,
     -- | Optional password
-    dbPassword :: Maybe Text,
+    password :: Maybe Text,
     -- | Handle to the running postgres process
-    dbProcess :: PostgresProcess,
+    process :: PostgresProcess,
     -- | Cleanup action (removes temp directories if needed)
-    dbCleanup :: IO (),
+    cleanup :: IO (),
     -- | Whether data directory is temporary
-    dbDataDirIsTemp :: Bool,
+    dataDirIsTemp :: Bool,
     -- | Whether socket directory is temporary
-    dbSocketDirIsTemp :: Bool
+    socketDirIsTemp :: Bool
   }
 
 instance Show Database where
   show db =
     "Database { port = "
-      <> show (dbPort db)
+      <> show db.port
       <> ", database = "
-      <> show (dbDatabaseName db)
+      <> show db.databaseName
       <> ", user = "
-      <> show (dbUser db)
+      <> show db.user
       <> ", dataDir = "
-      <> show (dbDataDirectory db)
+      <> show db.dataDirectory
       <> " }"
 
 -- | Get hasql connection settings for this database.
@@ -93,10 +86,10 @@ instance Show Database where
 connectionSettings :: Database -> Settings.Settings
 connectionSettings db =
   mconcat
-    [ Settings.hostAndPort (T.pack $ dbSocketDirectory db) (dbPort db),
-      Settings.dbname (dbDatabaseName db),
-      Settings.user (dbUser db),
-      maybe mempty Settings.password (dbPassword db)
+    [ Settings.hostAndPort (T.pack db.socketDirectory) db.port,
+      Settings.dbname db.databaseName,
+      Settings.user db.user,
+      maybe mempty Settings.password db.password
     ]
 
 -- | Get a libpq-compatible connection string.
@@ -107,28 +100,8 @@ connectionSettings db =
 connectionString :: Database -> Text
 connectionString db =
   T.unwords
-    [ "host=" <> T.pack (dbSocketDirectory db),
-      "port=" <> T.pack (show $ dbPort db),
-      "dbname=" <> dbDatabaseName db,
-      "user=" <> dbUser db
+    [ "host=" <> T.pack db.socketDirectory,
+      "port=" <> T.pack (show db.port),
+      "dbname=" <> db.databaseName,
+      "user=" <> db.user
     ]
-
--- | Get the data directory path.
-dataDirectory :: Database -> FilePath
-dataDirectory = dbDataDirectory
-
--- | Get the socket directory path.
-socketDirectory :: Database -> FilePath
-socketDirectory = dbSocketDirectory
-
--- | Get the port number.
-port :: Database -> Word16
-port = dbPort
-
--- | Get the database name.
-databaseName :: Database -> Text
-databaseName = dbDatabaseName
-
--- | Get the username.
-user :: Database -> Text
-user = dbUser

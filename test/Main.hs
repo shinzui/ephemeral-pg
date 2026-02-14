@@ -30,7 +30,7 @@ main = hspec $ do
     it "can restart a database" $ do
       result <- Pg.with $ \db -> do
         -- Get initial port
-        let port1 = Pg.port db
+        let port1 = db.port
 
         -- Restart the database
         restartResult <- Pg.restart db
@@ -44,7 +44,7 @@ main = hspec $ do
               Right conn -> do
                 Connection.release conn
                 -- Port should be the same
-                Pg.port db' `shouldBe` port1
+                db'.port `shouldBe` port1
       result `shouldSatisfy` isRight
 
   describe "EphemeralPg caching" $ do
@@ -78,27 +78,27 @@ main = hspec $ do
   describe "Config" $ do
     it "satisfies left identity (mempty <> x = x)" $
       property $ \dbName ->
-        let x = Config.defaultConfig {Config.configDatabaseName = T.pack dbName}
-         in Config.configDatabaseName (mempty <> x) == Config.configDatabaseName x
+        let x = Config.defaultConfig {Config.databaseName = T.pack dbName}
+         in (mempty <> x).databaseName == x.databaseName
 
     it "satisfies right identity (x <> mempty = x)" $
       property $ \dbName ->
-        let x = Config.defaultConfig {Config.configDatabaseName = T.pack dbName}
-         in Config.configDatabaseName (x <> mempty) == Config.configDatabaseName x
+        let x = Config.defaultConfig {Config.databaseName = T.pack dbName}
+         in (x <> mempty).databaseName == x.databaseName
 
     it "satisfies associativity ((x <> y) <> z = x <> (y <> z))" $
       property $ \(n1, n2, n3) ->
-        let x = mempty {Config.configDatabaseName = T.pack n1}
-            y = mempty {Config.configDatabaseName = T.pack n2}
-            z = mempty {Config.configDatabaseName = T.pack n3}
-         in Config.configDatabaseName ((x <> y) <> z)
-              == Config.configDatabaseName (x <> (y <> z))
+        let x = mempty {Config.databaseName = T.pack n1}
+            y = mempty {Config.databaseName = T.pack n2}
+            z = mempty {Config.databaseName = T.pack n3}
+         in ((x <> y) <> z).databaseName
+              == (x <> (y <> z)).databaseName
 
     it "combines postgres settings" $ do
-      let c1 = mempty {Config.configPostgresSettings = [("a", "1")]}
-          c2 = mempty {Config.configPostgresSettings = [("b", "2")]}
+      let c1 = mempty {Config.postgresSettings = [("a", "1")]}
+          c2 = mempty {Config.postgresSettings = [("b", "2")]}
           combined = c1 <> c2
-      Config.configPostgresSettings combined `shouldBe` [("a", "1"), ("b", "2")]
+      combined.postgresSettings `shouldBe` [("a", "1"), ("b", "2")]
 
   describe "Socket path validation" $ do
     it "rejects paths that are too long" $ do

@@ -53,9 +53,9 @@ import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory)
 -- | A snapshot of database state.
 data Snapshot = Snapshot
   { -- | Path to the snapshot data directory
-    snapshotPath :: FilePath,
+    path :: FilePath,
     -- | Whether to delete the snapshot when done
-    snapshotTemporary :: Bool
+    temporary :: Bool
   }
   deriving stock (Eq, Show)
 
@@ -69,7 +69,7 @@ data Snapshot = Snapshot
 createSnapshot :: Database -> IO (Either Text Snapshot)
 createSnapshot db = do
   -- Stop postgres gracefully to ensure data is flushed
-  stopResult <- stopPostgres (dbProcess db) ShutdownGraceful 30
+  stopResult <- stopPostgres db.process ShutdownGraceful 30
   case stopResult of
     Just err -> do
       -- Restart postgres and return error
@@ -84,7 +84,7 @@ createSnapshot db = do
       cowCapability <- detectCowCapability snapshotDir
 
       -- Copy data directory to snapshot
-      copyResult <- copyDirectory cowCapability (dbDataDirectory db) snapshotDir
+      copyResult <- copyDirectory cowCapability db.dataDirectory snapshotDir
 
       case copyResult of
         Left err -> do
@@ -107,8 +107,8 @@ createSnapshot db = do
               pure $
                 Right $
                   Snapshot
-                    { snapshotPath = snapshotDir,
-                      snapshotTemporary = True
+                    { path = snapshotDir,
+                      temporary = True
                     }
 
 -- | Restore a database from a snapshot.
@@ -118,25 +118,25 @@ createSnapshot db = do
 restoreSnapshot :: Snapshot -> Database -> IO (Either Text ())
 restoreSnapshot snapshot db = do
   -- Verify snapshot exists
-  exists <- doesDirectoryExist (snapshotPath snapshot)
+  exists <- doesDirectoryExist snapshot.path
   if not exists
-    then pure $ Left $ "Snapshot not found: " <> T.pack (snapshotPath snapshot)
+    then pure $ Left $ "Snapshot not found: " <> T.pack snapshot.path
     else do
       -- Stop postgres
-      stopResult <- stopPostgres (dbProcess db) ShutdownGraceful 30
+      stopResult <- stopPostgres db.process ShutdownGraceful 30
       case stopResult of
         Just err -> do
           _ <- restartPostgres db
           pure $ Left $ "Failed to stop postgres for restore: " <> T.pack (show err)
         Nothing -> do
           -- Remove current data directory
-          removeDirectoryIfExists (dbDataDirectory db)
+          removeDirectoryIfExists db.dataDirectory
 
           -- Detect CoW capability
-          cowCapability <- detectCowCapability (snapshotPath snapshot)
+          cowCapability <- detectCowCapability snapshot.path
 
           -- Copy snapshot to data directory
-          copyResult <- copyDirectory cowCapability (snapshotPath snapshot) (dbDataDirectory db)
+          copyResult <- copyDirectory cowCapability snapshot.path db.dataDirectory
 
           case copyResult of
             Left err -> do
@@ -154,8 +154,8 @@ restoreSnapshot snapshot db = do
 -- Only deletes temporary snapshots. Permanent snapshots are left alone.
 deleteSnapshot :: Snapshot -> IO ()
 deleteSnapshot snapshot =
-  if snapshotTemporary snapshot
-    then removeDirectoryIfExists (snapshotPath snapshot)
+  if snapshot.temporary
+    then removeDirectoryIfExists snapshot.path
     else pure ()
 
 -- | Restart postgres after a snapshot/restore operation.
@@ -164,10 +164,10 @@ restartPostgres db = do
   result <-
     startPostgres
       defaultConfig
-      (dbDataDirectory db)
-      (dbSocketDirectory db)
-      (dbPort db)
-      (dbUser db)
+      db.dataDirectory
+      db.socketDirectory
+      db.port
+      db.user
   case result of
     Left err -> pure $ Left $ "Failed to restart postgres: " <> T.pack (show err)
     Right newProcess -> pure $ Right newProcess

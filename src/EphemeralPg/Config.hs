@@ -6,7 +6,7 @@
 -- Configurations can be combined using the 'Semigroup' instance:
 --
 -- @
--- myConfig = 'defaultConfig' <> mempty { configDatabaseName = "testdb" }
+-- myConfig = 'defaultConfig' <> mempty { databaseName = "testdb" }
 -- @
 module EphemeralPg.Config
   ( -- * Configuration type
@@ -60,65 +60,65 @@ data ShutdownMode
 -- for 'Last' fields.
 data Config = Config
   { -- | Port to listen on. 'Nothing' means auto-select a free port.
-    configPort :: Last Word16,
+    port :: Last Word16,
     -- | Database name to create.
-    configDatabaseName :: Text,
+    databaseName :: Text,
     -- | Username for the database.
-    configUser :: Text,
+    user :: Text,
     -- | Optional password.
-    configPassword :: Maybe Text,
+    password :: Maybe Text,
     -- | Data directory configuration.
-    configDataDirectory :: DirectoryConfig,
+    dataDirectory :: DirectoryConfig,
     -- | Socket directory configuration.
-    configSocketDirectory :: DirectoryConfig,
+    socketDirectory :: DirectoryConfig,
     -- | Root directory for temporary files.
-    configTemporaryRoot :: Last FilePath,
+    temporaryRoot :: Last FilePath,
     -- | postgresql.conf settings.
-    configPostgresSettings :: [(Text, Text)],
+    postgresSettings :: [(Text, Text)],
     -- | Additional arguments for initdb.
-    configInitDbArgs :: [Text],
+    initDbArgs :: [Text],
     -- | Additional arguments for postgres server.
-    configPostgresArgs :: [Text],
+    postgresArgs :: [Text],
     -- | Additional arguments for createdb.
-    configCreateDbArgs :: [Text],
+    createDbArgs :: [Text],
     -- | Timeout waiting for postgres to accept connections (seconds).
-    configConnectionTimeoutSeconds :: Last Int,
+    connectionTimeoutSeconds :: Last Int,
     -- | Timeout waiting for graceful shutdown (seconds).
-    configShutdownTimeoutSeconds :: Last Int,
+    shutdownTimeoutSeconds :: Last Int,
     -- | How to shut down postgres.
-    configShutdownMode :: Last ShutdownMode,
+    shutdownMode :: Last ShutdownMode,
     -- | Handle for postgres stdout (Nothing = discard).
-    configStdout :: Last (Maybe Handle),
+    stdout :: Last (Maybe Handle),
     -- | Handle for postgres stderr (Nothing = discard).
-    configStderr :: Last (Maybe Handle)
+    stderr :: Last (Maybe Handle)
   }
   deriving stock (Show)
 
 instance Semigroup Config where
   a <> b =
     Config
-      { configPort = configPort a <> configPort b,
-        configDatabaseName =
-          if configDatabaseName b == ""
-            then configDatabaseName a
-            else configDatabaseName b,
-        configUser =
-          if configUser b == ""
-            then configUser a
-            else configUser b,
-        configPassword = configPassword b <|> configPassword a,
-        configDataDirectory = combineDir (configDataDirectory a) (configDataDirectory b),
-        configSocketDirectory = combineDir (configSocketDirectory a) (configSocketDirectory b),
-        configTemporaryRoot = configTemporaryRoot a <> configTemporaryRoot b,
-        configPostgresSettings = configPostgresSettings a <> configPostgresSettings b,
-        configInitDbArgs = configInitDbArgs a <> configInitDbArgs b,
-        configPostgresArgs = configPostgresArgs a <> configPostgresArgs b,
-        configCreateDbArgs = configCreateDbArgs a <> configCreateDbArgs b,
-        configConnectionTimeoutSeconds = configConnectionTimeoutSeconds a <> configConnectionTimeoutSeconds b,
-        configShutdownTimeoutSeconds = configShutdownTimeoutSeconds a <> configShutdownTimeoutSeconds b,
-        configShutdownMode = configShutdownMode a <> configShutdownMode b,
-        configStdout = configStdout a <> configStdout b,
-        configStderr = configStderr a <> configStderr b
+      { port = a.port <> b.port,
+        databaseName =
+          if b.databaseName == ""
+            then a.databaseName
+            else b.databaseName,
+        user =
+          if b.user == ""
+            then a.user
+            else b.user,
+        password = b.password <|> a.password,
+        dataDirectory = combineDir a.dataDirectory b.dataDirectory,
+        socketDirectory = combineDir a.socketDirectory b.socketDirectory,
+        temporaryRoot = a.temporaryRoot <> b.temporaryRoot,
+        postgresSettings = a.postgresSettings <> b.postgresSettings,
+        initDbArgs = a.initDbArgs <> b.initDbArgs,
+        postgresArgs = a.postgresArgs <> b.postgresArgs,
+        createDbArgs = a.createDbArgs <> b.createDbArgs,
+        connectionTimeoutSeconds = a.connectionTimeoutSeconds <> b.connectionTimeoutSeconds,
+        shutdownTimeoutSeconds = a.shutdownTimeoutSeconds <> b.shutdownTimeoutSeconds,
+        shutdownMode = a.shutdownMode <> b.shutdownMode,
+        stdout = a.stdout <> b.stdout,
+        stderr = a.stderr <> b.stderr
       }
     where
       combineDir DirectoryTemporary d = d
@@ -132,22 +132,22 @@ instance Semigroup Config where
 instance Monoid Config where
   mempty =
     Config
-      { configPort = Last Nothing,
-        configDatabaseName = "",
-        configUser = "",
-        configPassword = Nothing,
-        configDataDirectory = DirectoryTemporary,
-        configSocketDirectory = DirectoryTemporary,
-        configTemporaryRoot = Last Nothing,
-        configPostgresSettings = [],
-        configInitDbArgs = [],
-        configPostgresArgs = [],
-        configCreateDbArgs = [],
-        configConnectionTimeoutSeconds = Last Nothing,
-        configShutdownTimeoutSeconds = Last Nothing,
-        configShutdownMode = Last Nothing,
-        configStdout = Last Nothing,
-        configStderr = Last Nothing
+      { port = Last Nothing,
+        databaseName = "",
+        user = "",
+        password = Nothing,
+        dataDirectory = DirectoryTemporary,
+        socketDirectory = DirectoryTemporary,
+        temporaryRoot = Last Nothing,
+        postgresSettings = [],
+        initDbArgs = [],
+        postgresArgs = [],
+        createDbArgs = [],
+        connectionTimeoutSeconds = Last Nothing,
+        shutdownTimeoutSeconds = Last Nothing,
+        shutdownMode = Last Nothing,
+        stdout = Last Nothing,
+        stderr = Last Nothing
       }
 
 -- | Maximum socket path length for Unix domain sockets.
@@ -208,22 +208,22 @@ defaultInitDbArgs =
 defaultConfig :: Config
 defaultConfig =
   Config
-    { configPort = Last Nothing,
-      configDatabaseName = "postgres",
-      configUser = "", -- Will use current user
-      configPassword = Nothing,
-      configDataDirectory = DirectoryTemporary,
-      configSocketDirectory = DirectoryTemporary,
-      configTemporaryRoot = Last Nothing,
-      configPostgresSettings = defaultPostgresSettings,
-      configInitDbArgs = defaultInitDbArgs,
-      configPostgresArgs = [],
-      configCreateDbArgs = [],
-      configConnectionTimeoutSeconds = Last (Just defaultConnectionTimeoutSeconds),
-      configShutdownTimeoutSeconds = Last (Just defaultShutdownTimeoutSeconds),
-      configShutdownMode = Last (Just ShutdownGraceful),
-      configStdout = Last (Just Nothing), -- Discard by default
-      configStderr = Last (Just Nothing) -- Discard by default
+    { port = Last Nothing,
+      databaseName = "postgres",
+      user = "", -- Will use current user
+      password = Nothing,
+      dataDirectory = DirectoryTemporary,
+      socketDirectory = DirectoryTemporary,
+      temporaryRoot = Last Nothing,
+      postgresSettings = defaultPostgresSettings,
+      initDbArgs = defaultInitDbArgs,
+      postgresArgs = [],
+      createDbArgs = [],
+      connectionTimeoutSeconds = Last (Just defaultConnectionTimeoutSeconds),
+      shutdownTimeoutSeconds = Last (Just defaultShutdownTimeoutSeconds),
+      shutdownMode = Last (Just ShutdownGraceful),
+      stdout = Last (Just Nothing), -- Discard by default
+      stderr = Last (Just Nothing) -- Discard by default
     }
 
 -- | Configuration with verbose PostgreSQL logging.
@@ -236,7 +236,7 @@ defaultConfig =
 verboseConfig :: Config
 verboseConfig =
   mempty
-    { configPostgresSettings =
+    { postgresSettings =
         [ ("log_min_duration_statement", "'0'"),
           ("log_min_messages", "'DEBUG1'"),
           ("log_min_error_statement", "'DEBUG1'"),
@@ -260,7 +260,7 @@ verboseConfig =
 autoExplainConfig :: Int -> Config
 autoExplainConfig minDurationMs =
   mempty
-    { configPostgresSettings =
+    { postgresSettings =
         [ ("shared_preload_libraries", "'auto_explain'"),
           ("auto_explain.log_min_duration", "'" <> ms <> "'"),
           ("auto_explain.log_analyze", "'on'")

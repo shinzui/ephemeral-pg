@@ -1,14 +1,7 @@
-{-# LANGUAGE NoFieldSelectors #-}
-{-# OPTIONS_GHC -Wno-partial-fields #-}
-
 -- | Error types for ephemeral-pg.
 --
 -- This module provides a rich error hierarchy for diagnosing failures
 -- when starting or stopping temporary PostgreSQL databases.
---
--- Note: We use record syntax with sum types for structured error data.
--- The NoFieldSelectors extension prevents generation of partial field
--- accessor functions.
 module EphemeralPg.Error
   ( -- * Top-level errors
     StartError (..),
@@ -68,15 +61,15 @@ data InitDbError
     InitDbNotFound
   | -- | PostgreSQL version too old
     InitDbVersionMismatch
-      { initDbExpected :: Text,
-        initDbActual :: Text
+      { expected :: Text,
+        actual :: Text
       }
   | -- | initdb process failed
     InitDbFailed
-      { initDbExitCode :: ExitCode,
-        initDbStdout :: Text,
-        initDbStderr :: Text,
-        initDbCommand :: Text
+      { exitCode :: ExitCode,
+        stdout :: Text,
+        stderr :: Text,
+        command :: Text
       }
   | -- | Cannot write to data directory
     InitDbPermissionDenied FilePath
@@ -88,17 +81,17 @@ data PostgresError
     PostgresNotFound
   | -- | Server process exited unexpectedly
     PostgresStartFailed
-      { pgExitCode :: ExitCode,
-        pgStdout :: Text,
-        pgStderr :: Text,
-        pgCommand :: Text
+      { exitCode :: ExitCode,
+        stdout :: Text,
+        stderr :: Text,
+        command :: Text
       }
   | -- | Could not connect to verify server is running
     PostgresConnectionFailed Text
   | -- | Server version doesn't match requirements
     PostgresVersionMismatch
-      { pgExpected :: Text,
-        pgActual :: Text
+      { expected :: Text,
+        actual :: Text
       }
   deriving stock (Eq, Show)
 
@@ -108,11 +101,11 @@ data CreateDbError
     CreateDbNotFound
   | -- | createdb process failed
     CreateDbFailed
-      { createDbExitCode :: ExitCode,
-        createDbStdout :: Text,
-        createDbStderr :: Text,
-        createDbCommand :: Text,
-        createDbName :: Text
+      { exitCode :: ExitCode,
+        stdout :: Text,
+        stderr :: Text,
+        command :: Text,
+        name :: Text
       }
   | -- | Database with this name already exists
     DatabaseAlreadyExists Text
@@ -132,9 +125,9 @@ data ConfigError
     InvalidSocketDirectory FilePath Text
   | -- | Socket path exceeds Unix domain socket limit
     SocketPathTooLong
-      { socketPath :: FilePath,
-        socketPathLength :: Int,
-        socketPathMaxLength :: Int
+      { path :: FilePath,
+        pathLength :: Int,
+        pathMaxLength :: Int
       }
   | -- | Configuration options conflict with each other
     ConflictingConfig Text
@@ -162,14 +155,14 @@ data ResourceError
 data TimeoutError
   = -- | Timed out waiting for PostgreSQL to accept connections
     ConnectionTimeout
-      { timeoutDurationSeconds :: Int,
-        timeoutHost :: Text,
-        timeoutPort :: Word16
+      { durationSeconds :: Int,
+        host :: Text,
+        port :: Word16
       }
   | -- | Timed out waiting for graceful shutdown
     ShutdownTimeout
-      { shutdownTimeoutSeconds :: Int,
-        shutdownPid :: Int
+      { timeoutSeconds :: Int,
+        pid :: Int
       }
   deriving stock (Eq, Show)
 

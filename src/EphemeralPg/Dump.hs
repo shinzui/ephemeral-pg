@@ -65,17 +65,17 @@ data DumpFormat
 -- | Options for pg_dump.
 data DumpOptions = DumpOptions
   { -- | Output format (default: DumpPlain)
-    dumpFormat :: DumpFormat,
+    format :: DumpFormat,
     -- | Include CREATE DATABASE command
-    dumpCreateDb :: Bool,
+    createDb :: Bool,
     -- | Schema only (no data)
-    dumpSchemaOnly :: Bool,
+    schemaOnly :: Bool,
     -- | Data only (no schema)
-    dumpDataOnly :: Bool,
+    dataOnly :: Bool,
     -- | Include specific tables (empty = all)
-    dumpTables :: [Text],
+    tables :: [Text],
     -- | Exclude specific tables
-    dumpExcludeTables :: [Text]
+    excludeTables :: [Text]
   }
   deriving stock (Eq, Show)
 
@@ -83,12 +83,12 @@ data DumpOptions = DumpOptions
 defaultDumpOptions :: DumpOptions
 defaultDumpOptions =
   DumpOptions
-    { dumpFormat = DumpPlain,
-      dumpCreateDb = False,
-      dumpSchemaOnly = False,
-      dumpDataOnly = False,
-      dumpTables = [],
-      dumpExcludeTables = []
+    { format = DumpPlain,
+      createDb = False,
+      schemaOnly = False,
+      dataOnly = False,
+      tables = [],
+      excludeTables = []
     }
 
 -- | Dump a database to a file.
@@ -127,7 +127,7 @@ dump db outputPath opts = do
 -- Only works with DumpPlain format.
 dumpToText :: Database -> DumpOptions -> IO (Either Text Text)
 dumpToText db opts = do
-  if dumpFormat opts /= DumpPlain
+  if opts.format /= DumpPlain
     then pure $ Left "dumpToText only works with DumpPlain format"
     else do
       mPgDump <- findExecutable "pg_dump"
@@ -167,13 +167,13 @@ restore db inputPath = do
     Just psqlPath -> do
       let args =
             [ "-h",
-              T.pack $ dbSocketDirectory db,
+              T.pack db.socketDirectory,
               "-p",
-              T.pack $ show $ dbPort db,
+              T.pack $ show db.port,
               "-U",
-              dbUser db,
+              db.user,
               "-d",
-              dbDatabaseName db,
+              db.databaseName,
               "-f",
               T.pack inputPath,
               "-v",
@@ -211,13 +211,13 @@ restoreFromText db sqlText = do
     Just psqlPath -> do
       let args =
             [ "-h",
-              T.pack $ dbSocketDirectory db,
+              T.pack db.socketDirectory,
               "-p",
-              T.pack $ show $ dbPort db,
+              T.pack $ show db.port,
               "-U",
-              dbUser db,
+              db.user,
               "-d",
-              dbDatabaseName db,
+              db.databaseName,
               "-c",
               sqlText,
               "-v",
@@ -250,13 +250,13 @@ restoreFromText db sqlText = do
 buildDumpArgs :: Database -> DumpOptions -> [Text]
 buildDumpArgs db opts =
   [ "-h",
-    T.pack $ dbSocketDirectory db,
+    T.pack db.socketDirectory,
     "-p",
-    T.pack $ show $ dbPort db,
+    T.pack $ show db.port,
     "-U",
-    dbUser db,
+    db.user,
     "-d",
-    dbDatabaseName db
+    db.databaseName
   ]
     <> formatArg
     <> createDbArg
@@ -265,28 +265,28 @@ buildDumpArgs db opts =
     <> tableArgs
     <> excludeTableArgs
   where
-    formatArg = case dumpFormat opts of
+    formatArg = case opts.format of
       DumpPlain -> ["-Fp"]
       DumpCustom -> ["-Fc"]
       DumpDirectory -> ["-Fd"]
       DumpTar -> ["-Ft"]
 
     createDbArg =
-      if dumpCreateDb opts then ["-C"] else []
+      if opts.createDb then ["-C"] else []
 
     schemaOnlyArg =
-      if dumpSchemaOnly opts then ["-s"] else []
+      if opts.schemaOnly then ["-s"] else []
 
     dataOnlyArg =
-      if dumpDataOnly opts then ["-a"] else []
+      if opts.dataOnly then ["-a"] else []
 
     tableArgs =
-      concatMap (\t -> ["-t", t]) (dumpTables opts)
+      concatMap (\t -> ["-t", t]) opts.tables
 
     excludeTableArgs =
-      concatMap (\t -> ["-T", t]) (dumpExcludeTables opts)
+      concatMap (\t -> ["-T", t]) opts.excludeTables
 
 -- | Build environment variables for pg commands.
 buildEnv :: Database -> [(String, String)]
 buildEnv db =
-  [("PGPASSWORD", T.unpack pw) | Just pw <- [dbPassword db]]
+  [("PGPASSWORD", T.unpack pw) | Just pw <- [db.password]]

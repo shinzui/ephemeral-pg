@@ -28,21 +28,16 @@
 --
 -- main :: IO ()
 -- main = do
---   let config = Pg.'defaultConfig' { Pg.configDatabaseName = "testdb" }
+--   let config = Pg.'defaultConfig' { Pg.databaseName = "testdb" }
 --   Pg.'withConfig' config $ \\db -> do
 --     -- Use the database...
 --     pure ()
 -- @
 module EphemeralPg
   ( -- * Database Handle
-    Database,
+    Database (..),
     connectionSettings,
     connectionString,
-    dataDirectory,
-    socketDirectory,
-    port,
-    databaseName,
-    user,
 
     -- * Lifecycle Management
     with,
@@ -94,11 +89,6 @@ import EphemeralPg.Database
   ( Database (..),
     connectionSettings,
     connectionString,
-    dataDirectory,
-    databaseName,
-    port,
-    socketDirectory,
-    user,
   )
 import EphemeralPg.Error
   ( StartError (..),
@@ -148,7 +138,7 @@ with = withConfig defaultConfig
 -- | Like 'with' but with custom configuration.
 --
 -- @
--- let config = 'defaultConfig' { configDatabaseName = "testdb" }
+-- let config = 'defaultConfig' { databaseName = "testdb" }
 -- 'withConfig' config $ \\db -> do
 --   -- Use the database...
 -- @
@@ -177,13 +167,13 @@ withConfig config action = mask $ \restore -> do
 -- @
 start :: Config -> IO (Either StartError Database)
 start config = runStartup $ do
-  let mTempRoot = getLast (configTemporaryRoot config)
+  let mTempRoot = getLast config.temporaryRoot
 
   -- Create data directory
   (dataDir, dataDirIsTemp) <-
     liftE $
       resolveDirectory
-        (configDataDirectory config)
+        config.dataDirectory
         mTempRoot
         "data"
         createTempDataDirectory
@@ -192,7 +182,7 @@ start config = runStartup $ do
   (socketDir, socketDirIsTemp) <-
     liftE
       ( resolveDirectory
-          (configSocketDirectory config)
+          config.socketDirectory
           mTempRoot
           "socket"
           createTempSocketDirectory
@@ -218,7 +208,7 @@ start config = runStartup $ do
       `onError` cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
 
   -- Create database
-  let dbName = configDatabaseName config
+  let dbName = config.databaseName
   () <-
     liftE (runCreateDb config socketDir p username dbName)
       `onError` do
@@ -236,16 +226,16 @@ start config = runStartup $ do
 
   pure $
     Database
-      { dbDataDirectory = dataDir,
-        dbSocketDirectory = socketDir,
-        dbPort = p,
-        dbDatabaseName = dbName,
-        dbUser = username,
-        dbPassword = configPassword config,
-        dbProcess = pgProcess,
-        dbCleanup = cleanupAction,
-        dbDataDirIsTemp = dataDirIsTemp,
-        dbSocketDirIsTemp = socketDirIsTemp
+      { dataDirectory = dataDir,
+        socketDirectory = socketDir,
+        port = p,
+        databaseName = dbName,
+        user = username,
+        password = config.password,
+        process = pgProcess,
+        cleanup = cleanupAction,
+        dataDirIsTemp = dataDirIsTemp,
+        socketDirIsTemp = socketDirIsTemp
       }
   where
     cleanup :: Bool -> FilePath -> Bool -> FilePath -> IO ()
@@ -255,13 +245,13 @@ start config = runStartup $ do
 
 -- | Get port from config or find a free one.
 getPort :: Config -> IO (Either StartError Word16)
-getPort config = case getLast (configPort config) of
+getPort config = case getLast config.port of
   Just p -> pure $ Right p
   Nothing -> findFreePort
 
 -- | Get username from config or current user.
 getUsername :: Config -> IO Text
-getUsername config = case configUser config of
+getUsername config = case config.user of
   "" -> getCurrentUser
   u -> pure u
 
@@ -277,10 +267,10 @@ stop db = do
   let timeoutSecs = defaultShutdownTimeoutSeconds
 
   -- Stop postgres
-  _ <- stopPostgres (dbProcess db) mode timeoutSecs
+  _ <- stopPostgres db.process mode timeoutSecs
 
   -- Run cleanup (removes temp directories)
-  dbCleanup db
+  db.cleanup
 
 -- | Restart a database.
 --
@@ -306,7 +296,7 @@ restart :: Database -> IO (Either StartError Database)
 restart db = runStartup $ do
   -- Stop postgres gracefully
   liftIO $ do
-    _ <- stopPostgres (dbProcess db) ShutdownGraceful defaultShutdownTimeoutSeconds
+    _ <- stopPostgres db.process ShutdownGraceful defaultShutdownTimeoutSeconds
     pure ()
 
   -- Start postgres again with the same configuration
@@ -314,12 +304,12 @@ restart db = runStartup $ do
     liftE $
       startPostgres
         defaultConfig
-        (dbDataDirectory db)
-        (dbSocketDirectory db)
-        (dbPort db)
-        (dbUser db)
+        db.dataDirectory
+        db.socketDirectory
+        db.port
+        db.user
 
-  pure $ db {dbProcess = newProcess}
+  pure $ db {process = newProcess}
 
 -- | Like 'with' but uses initdb caching for faster startup.
 --
@@ -351,7 +341,7 @@ withCachedConfig config cacheConfig action = mask $ \restore -> do
 -- from the cache. Otherwise, initdb is run and the result is cached.
 startCached :: Config -> CacheConfig -> IO (Either StartError Database)
 startCached config cacheConfig
-  | not (cacheConfigEnabled cacheConfig) = start config
+  | not cacheConfig.enabled = start config
   | otherwise = do
       -- Get cache key
       keyResult <- getCacheKey config
@@ -361,7 +351,7 @@ startCached config cacheConfig
           start config
         Right cacheKey -> do
           -- Check if cache exists
-          cached <- isCached cacheKey (cacheConfigRoot cacheConfig)
+          cached <- isCached cacheKey cacheConfig.root
           if cached
             then startFromCache config cacheConfig cacheKey
             else startAndCache config cacheConfig cacheKey
@@ -369,7 +359,7 @@ startCached config cacheConfig
 -- | Start from an existing cache.
 startFromCache :: Config -> CacheConfig -> CacheKey -> IO (Either StartError Database)
 startFromCache config cacheConfig cacheKey = do
-  let mTempRoot = getLast (configTemporaryRoot config)
+  let mTempRoot = getLast config.temporaryRoot
 
   -- Create temporary data directory (to get the path)
   dataResult <- createTempDataDirectory mTempRoot
@@ -381,7 +371,7 @@ startFromCache config cacheConfig cacheKey = do
       removeDirectoryIfExists dataDir
 
       -- Restore from cache
-      restoreResult <- restoreFromCache cacheKey dataDir (cacheConfigRoot cacheConfig)
+      restoreResult <- restoreFromCache cacheKey dataDir cacheConfig.root
       case restoreResult of
         Left _err -> do
           -- Cache restore failed, fall back to non-cached start
@@ -401,7 +391,7 @@ startFromCache config cacheConfig cacheKey = do
 -- Cache is created after initdb but before postgres starts.
 startAndCache :: Config -> CacheConfig -> CacheKey -> IO (Either StartError Database)
 startAndCache config cacheConfig cacheKey = do
-  let mTempRoot = getLast (configTemporaryRoot config)
+  let mTempRoot = getLast config.temporaryRoot
 
   -- Create data directory
   dataResult <- createTempDataDirectory mTempRoot
@@ -418,7 +408,7 @@ startAndCache config cacheConfig cacheKey = do
           -- Cache the data directory NOW (before postgres starts)
           -- This ensures the cache contains only clean initdb output
           when dataDirIsTemp $ do
-            _ <- createCache cacheKey dataDir (cacheConfigRoot cacheConfig)
+            _ <- createCache cacheKey dataDir cacheConfig.root
             pure ()
 
           -- Continue with normal startup from the initialized data directory
@@ -427,13 +417,13 @@ startAndCache config cacheConfig cacheKey = do
 -- | Continue startup from an existing data directory.
 continueStartup :: Config -> FilePath -> Bool -> IO (Either StartError Database)
 continueStartup config dataDir dataDirIsTemp = runStartup $ do
-  let mTempRoot = getLast (configTemporaryRoot config)
+  let mTempRoot = getLast config.temporaryRoot
 
   -- Create socket directory
   (socketDir, socketDirIsTemp) <-
     liftE
       ( resolveDirectory
-          (configSocketDirectory config)
+          config.socketDirectory
           mTempRoot
           "socket"
           createTempSocketDirectory
@@ -454,7 +444,7 @@ continueStartup config dataDir dataDirIsTemp = runStartup $ do
       `onError` cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
 
   -- Create database
-  let dbName = configDatabaseName config
+  let dbName = config.databaseName
   () <-
     liftE (runCreateDb config socketDir p username dbName)
       `onError` do
@@ -471,16 +461,16 @@ continueStartup config dataDir dataDirIsTemp = runStartup $ do
 
   pure $
     Database
-      { dbDataDirectory = dataDir,
-        dbSocketDirectory = socketDir,
-        dbPort = p,
-        dbDatabaseName = dbName,
-        dbUser = username,
-        dbPassword = configPassword config,
-        dbProcess = pgProcess,
-        dbCleanup = cleanupAction,
-        dbDataDirIsTemp = dataDirIsTemp,
-        dbSocketDirIsTemp = socketDirIsTemp
+      { dataDirectory = dataDir,
+        socketDirectory = socketDir,
+        port = p,
+        databaseName = dbName,
+        user = username,
+        password = config.password,
+        process = pgProcess,
+        cleanup = cleanupAction,
+        dataDirIsTemp = dataDirIsTemp,
+        socketDirIsTemp = socketDirIsTemp
       }
   where
     cleanupDirs :: Bool -> FilePath -> Bool -> FilePath -> IO ()

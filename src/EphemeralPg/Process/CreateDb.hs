@@ -51,11 +51,11 @@ runCreateDb config socketDir port username dbName = do
                     Left $
                       CreateDbError $
                         CreateDbFailed
-                          { createDbExitCode = exitCode,
-                            createDbStdout = stdout,
-                            createDbStderr = stderr,
-                            createDbCommand = T.unwords (T.pack createDbPath : args),
-                            createDbName = dbName
+                          { exitCode,
+                            stdout,
+                            stderr,
+                            command = T.unwords (T.pack createDbPath : args),
+                            name = dbName
                           }
 
 -- | Build createdb command line arguments.
@@ -66,4 +66,4 @@ buildCreateDbArgs config socketDir port username dbName =
     "--username=" <> username,
     dbName
   ]
-    <> configCreateDbArgs config
+    <> config.createDbArgs

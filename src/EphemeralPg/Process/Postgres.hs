@@ -79,51 +79,51 @@ startPostgres config dataDir socketDir port username = runStartup $ do
           & setCreateGroup True -- So we can signal the whole group
 
   -- Start the process
-  process <-
+  typedProcess <-
     liftIO (try $ startProcess processConfig) >>= \case
       Left (ex :: SomeException) ->
         throwE $
           PostgresStartError $
             PostgresStartFailed
-              { pgExitCode = ExitFailure 1,
-                pgStdout = "",
-                pgStderr = T.pack $ show ex,
-                pgCommand = T.unwords (T.pack postgresPath : args)
+              { exitCode = ExitFailure 1,
+                stdout = "",
+                stderr = T.pack $ show ex,
+                command = T.unwords (T.pack postgresPath : args)
               }
       Right p -> pure p
 
   -- Get the PID
-  let pHandle = unsafeProcessHandle process
-  pid <-
+  let pHandle = unsafeProcessHandle typedProcess
+  pgPid <-
     liftMaybe
       ( PostgresStartError $
           PostgresStartFailed
-            { pgExitCode = ExitFailure 1,
-              pgStdout = "",
-              pgStderr = "Could not get process ID",
-              pgCommand = T.unwords (T.pack postgresPath : args)
+            { exitCode = ExitFailure 1,
+              stdout = "",
+              stderr = "Could not get process ID",
+              command = T.unwords (T.pack postgresPath : args)
             }
       )
       =<< liftIO (getPid pHandle)
 
-  let postgresProcess =
+  let pgProcess =
         PostgresProcess
-          { postgresProcess = process,
-            postgresPid = CPid $ fromIntegral pid
+          { process = typedProcess,
+            pid = CPid $ fromIntegral pgPid
           }
 
   -- Wait for the server to be ready
   let timeoutSecs =
         maybe defaultConnectionTimeoutSeconds id $
-          getLast (configConnectionTimeoutSeconds config)
+          getLast config.connectionTimeoutSeconds
 
   liftE (waitForPostgres socketDir port timeoutSecs)
     `onError` do
       -- Kill the server since it didn't start properly
-      _ <- stopPostgres postgresProcess ShutdownImmediate 5
+      _ <- stopPostgres pgProcess ShutdownImmediate 5
       pure ()
 
-  pure postgresProcess
+  pure pgProcess
 
 -- | Build postgres command line arguments.
 buildPostgresArgs :: Config -> FilePath -> FilePath -> Word16 -> Text -> [Text]
@@ -137,7 +137,7 @@ buildPostgresArgs config dataDir socketDir port _username =
     "-h",
     "127.0.0.1" -- Also listen on TCP for debugging
   ]
-    <> configPostgresArgs config
+    <> config.postgresArgs
 
 -- | Wait for PostgreSQL to accept connections.
 waitForPostgres :: FilePath -> Word16 -> Int -> IO (Either StartError ())
@@ -150,9 +150,9 @@ waitForPostgres socketDir port timeoutSecs = do
         Left $
           TimeoutError $
             ConnectionTimeout
-              { timeoutDurationSeconds = timeoutSecs,
-                timeoutHost = T.pack socketDir,
-                timeoutPort = port
+              { durationSeconds = timeoutSecs,
+                host = T.pack socketDir,
+                port
               }
     Just () -> pure $ Right ()
   where
@@ -190,7 +190,7 @@ stopPostgres PostgresProcess {..} mode timeoutSecs = mask_ $ do
         ShutdownImmediate -> sigQUIT
 
   -- Send the signal
-  result <- try $ signalProcess signal postgresPid
+  result <- try $ signalProcess signal pid
   case result of
     Left (_ :: SomeException) ->
       -- Process might already be dead
@@ -198,13 +198,13 @@ stopPostgres PostgresProcess {..} mode timeoutSecs = mask_ $ do
     Right () -> do
       -- Wait for the process to exit with timeout
       let deadline = timeoutSecs * 1000000
-      exitResult <- timeout deadline $ waitExitCode postgresProcess
+      exitResult <- timeout deadline $ waitExitCode process
 
       case exitResult of
         Just _ -> pure Nothing -- Exited normally
         Nothing -> do
           -- Timeout: force kill
-          _ <- try @SomeException $ signalProcess sigKILL postgresPid
+          _ <- try @SomeException $ signalProcess sigKILL pid
           -- Wait a bit more for the forced kill
-          _ <- timeout 5000000 $ waitExitCode postgresProcess
+          _ <- timeout 5000000 $ waitExitCode process
           pure $ Just $ ShutdownTimedOut timeoutSecs
