@@ -358,6 +358,32 @@ clearCache :: IO ()      -- Clear current user's cache
 clearAllCaches :: IO ()  -- Clear all cached data
 ```
 
+## Benchmarks
+
+Measured with [tasty-bench](https://hackage.haskell.org/package/tasty-bench) in wall-clock mode on Apple Silicon.
+
+| Benchmark | Time | vs baseline |
+|---|---|---|
+| **Lifecycle** | | |
+| `defaultConfig` | 796 ms | -- |
+| `defaultConfig <> verboseConfig` | 812 ms | 1.02x |
+| `defaultConfig <> autoExplainConfig 100` | 769 ms | 0.97x |
+| **Caching** | | |
+| `withConfig` (uncached) | 755 ms | -- |
+| `withCached` | 434 ms | 0.58x |
+| **Snapshot** | | |
+| lifecycle only | 761 ms | -- |
+| lifecycle + `createSnapshot` | 1.13 s | 1.48x |
+| lifecycle + `createSnapshot` + `restoreSnapshot` | 1.39 s | 1.83x |
+| **Connection** | | |
+| hasql `acquire` + `release` | 1.64 ms | -- |
+
+Highlights:
+- Cached startup is ~42% faster than uncached (CoW copy vs full initdb)
+- `verboseConfig` and `autoExplainConfig` add negligible overhead
+- Snapshot create adds ~365 ms, restore adds ~265 ms
+- Connection acquire/release is ~1.6 ms once the database is running
+
 ## Comparison with tmp-postgres
 
 ephemeral-pg is a modern replacement for tmp-postgres, addressing several issues:
