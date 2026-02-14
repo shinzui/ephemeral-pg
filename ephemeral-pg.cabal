@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: ephemeral-pg
-version: 0.1.0.0
+version: 0.2.0.0
 synopsis: Temporary PostgreSQL databases for testing
 description:
   A modern library for creating temporary PostgreSQL instances for testing.
