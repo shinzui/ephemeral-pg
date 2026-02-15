@@ -143,14 +143,12 @@ with = withConfig defaultConfig
 --   -- Use the database...
 -- @
 withConfig :: Config -> (Database -> IO a) -> IO (Either StartError a)
-withConfig config action = mask $ \restore -> do
-  result <- start config
-  case result of
-    Left err -> pure (Left err)
-    Right db -> do
-      a <- restore (action db) `onException` stop db
-      stop db
-      pure (Right a)
+withConfig config action = mask $ \restore -> runStartup $ do
+  db <- liftE $ start config
+  liftIO $ do
+    a <- restore (action db) `onException` stop db
+    stop db
+    pure a
 
 -- | Start a temporary database.
 --
@@ -326,14 +324,12 @@ withCached = withCachedConfig defaultConfig defaultCacheConfig
 
 -- | Like 'withCached' but with custom configuration.
 withCachedConfig :: Config -> CacheConfig -> (Database -> IO a) -> IO (Either StartError a)
-withCachedConfig config cacheConfig action = mask $ \restore -> do
-  result <- startCached config cacheConfig
-  case result of
-    Left err -> pure (Left err)
-    Right db -> do
-      a <- restore (action db) `onException` stop db
-      stop db
-      pure (Right a)
+withCachedConfig config cacheConfig action = mask $ \restore -> runStartup $ do
+  db <- liftE $ startCached config cacheConfig
+  liftIO $ do
+    a <- restore (action db) `onException` stop db
+    stop db
+    pure a
 
 -- | Start a temporary database using initdb caching.
 --
@@ -358,61 +354,50 @@ startCached config cacheConfig
 
 -- | Start from an existing cache.
 startFromCache :: Config -> CacheConfig -> CacheKey -> IO (Either StartError Database)
-startFromCache config cacheConfig cacheKey = do
+startFromCache config cacheConfig cacheKey = runStartup $ do
   let mTempRoot = getLast config.temporaryRoot
 
   -- Create temporary data directory (to get the path)
-  dataResult <- createTempDataDirectory mTempRoot
-  case dataResult of
-    Left err -> pure $ Left err
-    Right (dataDir, dataDirIsTemp) -> do
-      -- Remove the directory so cp can create it fresh
-      -- (otherwise cp -cR creates nested directories on macOS)
-      removeDirectoryIfExists dataDir
+  (dataDir, dataDirIsTemp) <- liftE $ createTempDataDirectory mTempRoot
 
-      -- Restore from cache
-      restoreResult <- restoreFromCache cacheKey dataDir cacheConfig.root
-      case restoreResult of
-        Left _err -> do
-          -- Cache restore failed, fall back to non-cached start
-          removeDirectoryIfExists dataDir
-          start config
-        Right () -> do
-          -- Clean up any runtime files from the cache (postmaster.pid, etc.)
-          cleanupRuntimeFiles dataDir
+  -- Remove the directory so cp can create it fresh
+  -- (otherwise cp -cR creates nested directories on macOS)
+  liftIO $ removeDirectoryIfExists dataDir
 
-          -- Write postgresql.conf (cache doesn't include our custom settings)
-          writePostgresConf config dataDir
-
-          -- Continue with normal startup from the restored data directory
-          continueStartup config dataDir dataDirIsTemp
+  -- Restore from cache
+  restoreResult <- liftIO $ restoreFromCache cacheKey dataDir cacheConfig.root
+  case restoreResult of
+    Left _err -> do
+      -- Cache restore failed, fall back to non-cached start
+      liftIO $ removeDirectoryIfExists dataDir
+      liftE $ start config
+    Right () -> do
+      liftIO $ do
+        cleanupRuntimeFiles dataDir
+        writePostgresConf config dataDir
+      liftE $ continueStartup config dataDir dataDirIsTemp
 
 -- | Start normally and cache the result.
 -- Cache is created after initdb but before postgres starts.
 startAndCache :: Config -> CacheConfig -> CacheKey -> IO (Either StartError Database)
-startAndCache config cacheConfig cacheKey = do
+startAndCache config cacheConfig cacheKey = runStartup $ do
   let mTempRoot = getLast config.temporaryRoot
 
   -- Create data directory
-  dataResult <- createTempDataDirectory mTempRoot
-  case dataResult of
-    Left err -> pure $ Left err
-    Right (dataDir, dataDirIsTemp) -> do
-      -- Run initdb
-      initResult <- runInitDb config dataDir
-      case initResult of
-        Left err -> do
-          when dataDirIsTemp $ removeDirectoryIfExists dataDir
-          pure $ Left err
-        Right () -> do
-          -- Cache the data directory NOW (before postgres starts)
-          -- This ensures the cache contains only clean initdb output
-          when dataDirIsTemp $ do
-            _ <- createCache cacheKey dataDir cacheConfig.root
-            pure ()
+  (dataDir, dataDirIsTemp) <- liftE $ createTempDataDirectory mTempRoot
 
-          -- Continue with normal startup from the initialized data directory
-          continueStartup config dataDir dataDirIsTemp
+  -- Run initdb
+  liftE (runInitDb config dataDir)
+    `onError` when dataDirIsTemp (removeDirectoryIfExists dataDir)
+
+  -- Cache the data directory NOW (before postgres starts)
+  -- This ensures the cache contains only clean initdb output
+  liftIO $ when dataDirIsTemp $ do
+    _ <- createCache cacheKey dataDir cacheConfig.root
+    pure ()
+
+  -- Continue with normal startup from the initialized data directory
+  liftE $ continueStartup config dataDir dataDirIsTemp
 
 -- | Continue startup from an existing data directory.
 continueStartup :: Config -> FilePath -> Bool -> IO (Either StartError Database)

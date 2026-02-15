@@ -33,7 +33,11 @@ module EphemeralPg.Internal.Cache
 where
 
 import Control.Exception (SomeException, try)
+import Control.Monad (unless, when)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.ByteString.Lazy qualified as LBS
+import Data.Function ((&))
 import Data.Hashable (hash)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -107,23 +111,18 @@ ensureCacheDirectory mRoot = do
 getPostgresVersion :: IO (Either Text Text)
 getPostgresVersion = do
   result <- try $ readProcess config
-  case result of
+  pure $ case result of
     Left (ex :: SomeException) ->
-      pure $ Left $ "Failed to get postgres version: " <> T.pack (show ex)
-    Right (exitCode, stdout, _stderr) ->
-      case exitCode of
-        ExitSuccess -> do
-          let versionLine = T.decodeUtf8Lenient $ LBS.toStrict stdout
-          pure $ Right $ extractMajorVersion versionLine
-        ExitFailure code ->
-          pure $ Left $ "postgres --version failed with code " <> T.pack (show code)
+      Left $ "Failed to get postgres version: " <> T.pack (show ex)
+    Right (ExitSuccess, stdout, _stderr) ->
+      Right $ extractMajorVersion $ T.decodeUtf8Lenient $ LBS.toStrict stdout
+    Right (ExitFailure code, _, _) ->
+      Left $ "postgres --version failed with code " <> T.pack (show code)
   where
     config =
       proc "postgres" ["--version"]
         & setStdout byteStringOutput
         & setStderr byteStringOutput
-
-    (&) = flip ($)
 
     -- Extract major version from "postgres (PostgreSQL) 17.7"
     extractMajorVersion :: Text -> Text
@@ -139,25 +138,21 @@ getPostgresVersion = do
 
 -- | Generate a cache key for the given configuration.
 getCacheKey :: Config -> IO (Either Text CacheKey)
-getCacheKey config = do
-  versionResult <- getPostgresVersion
-  case versionResult of
-    Left err -> pure $ Left err
-    Right version -> do
-      -- Hash the configuration elements that affect initdb output
-      let configStr =
-            T.unlines
-              [ T.unwords config.initDbArgs,
-                T.unlines $ map (\(k, v) -> k <> "=" <> v) config.postgresSettings,
-                config.user
-              ]
-      let cfgHash = T.pack $ show $ abs $ hash (T.unpack configStr)
-      pure $
-        Right $
-          CacheKey
-            { pgVersion = version,
-              configHash = cfgHash
-            }
+getCacheKey config = runExceptT $ do
+  version <- ExceptT getPostgresVersion
+  -- Hash the configuration elements that affect initdb output
+  let configStr =
+        T.unlines
+          [ T.unwords config.initDbArgs,
+            T.unlines $ map (\(k, v) -> k <> "=" <> v) config.postgresSettings,
+            config.user
+          ]
+  let cfgHash = T.pack $ show $ abs $ hash (T.unpack configStr)
+  pure
+    CacheKey
+      { pgVersion = version,
+        configHash = cfgHash
+      }
 
 -- | Get the directory path for a given cache key.
 getCacheDirectory :: CacheKey -> Maybe FilePath -> IO FilePath
@@ -188,47 +183,41 @@ createCache key srcDataDir mRoot = do
 
 -- | Restore from cache to a new data directory.
 restoreFromCache :: CacheKey -> FilePath -> Maybe FilePath -> IO (Either Text ())
-restoreFromCache key dstDataDir mRoot = do
-  dir <- getCacheDirectory key mRoot
+restoreFromCache key dstDataDir mRoot = runExceptT $ do
+  dir <- liftIO $ getCacheDirectory key mRoot
   let srcDataDir = dir </> "data"
-
-  exists <- doesDirectoryExist srcDataDir
-  if not exists
-    then pure $ Left $ "Cache not found: " <> T.pack srcDataDir
-    else do
-      -- Detect CoW capability
-      cowCapability <- detectCowCapability dir
-
-      -- Copy from cache to destination
-      copyDirectory cowCapability srcDataDir dstDataDir
+  exists <- liftIO $ doesDirectoryExist srcDataDir
+  unless exists $
+    throwE $
+      "Cache not found: " <> T.pack srcDataDir
+  cowCapability <- liftIO $ detectCowCapability dir
+  ExceptT $ copyDirectory cowCapability srcDataDir dstDataDir
 
 -- | Clear the cache for a specific key.
 clearCache :: CacheKey -> Maybe FilePath -> IO (Either Text ())
-clearCache key mRoot = do
-  dir <- getCacheDirectory key mRoot
-  exists <- doesDirectoryExist dir
-  if not exists
-    then pure $ Right ()
-    else do
-      result <- try $ removeDirectoryRecursive dir
-      case result of
-        Left (ex :: SomeException) ->
-          pure $ Left $ "Failed to clear cache: " <> T.pack (show ex)
-        Right () ->
-          pure $ Right ()
+clearCache key mRoot = runExceptT $ do
+  dir <- liftIO $ getCacheDirectory key mRoot
+  exists <- liftIO $ doesDirectoryExist dir
+  when exists $
+    tryE "Failed to clear cache" $
+      removeDirectoryRecursive dir
 
 -- | Clear all caches.
 clearAllCaches :: Maybe FilePath -> IO (Either Text ())
-clearAllCaches mRoot = do
-  cacheDir <- ensureCacheDirectory mRoot
-  result <- try $ do
+clearAllCaches mRoot = runExceptT $ do
+  cacheDir <- liftIO $ ensureCacheDirectory mRoot
+  tryE "Failed to clear all caches" $ do
     entries <- listDirectory cacheDir
     mapM_ (\e -> removeDirectoryRecursive (cacheDir </> e)) entries
+
+-- | Try an IO action, converting exceptions to a prefixed error.
+tryE :: Text -> IO a -> ExceptT Text IO a
+tryE prefix action = do
+  result <- liftIO $ try action
   case result of
     Left (ex :: SomeException) ->
-      pure $ Left $ "Failed to clear all caches: " <> T.pack (show ex)
-    Right () ->
-      pure $ Right ()
+      throwE $ prefix <> ": " <> T.pack (show ex)
+    Right a -> pure a
 
 -- | Clean up PostgreSQL runtime files from a data directory.
 --

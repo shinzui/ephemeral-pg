@@ -61,7 +61,7 @@ liftMaybe err = maybe (throwE err) pure
 -- (socketDir, socketDirIsTemp) <- liftE (createTempSocketDirectory mRoot)
 --   \`onError\` when dataDirIsTemp (removeDirectoryIfExists dataDir)
 -- @
-onError :: Startup a -> IO () -> Startup a
+onError :: ExceptT e IO a -> IO () -> ExceptT e IO a
 onError action cleanup = catchE action $ \err -> do
   liftIO cleanup
   throwE err

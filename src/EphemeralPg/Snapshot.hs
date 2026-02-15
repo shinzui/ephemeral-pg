@@ -36,6 +36,9 @@ module EphemeralPg.Snapshot
   )
 where
 
+import Control.Monad (unless, void)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE, withExceptT)
 import Data.Text (Text)
 import Data.Text qualified as T
 import EphemeralPg.Config (ShutdownMode (..), defaultConfig)
@@ -46,6 +49,7 @@ import EphemeralPg.Internal.CopyOnWrite
     detectCowCapability,
   )
 import EphemeralPg.Internal.Directory (removeDirectoryIfExists)
+import EphemeralPg.Internal.Except (onError)
 import EphemeralPg.Process.Postgres (startPostgres, stopPostgres)
 import System.Directory (doesDirectoryExist)
 import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory)
@@ -67,87 +71,50 @@ data Snapshot = Snapshot
 -- Note: This is a relatively expensive operation and should be used
 -- sparingly (e.g., once after setup, not between every test).
 createSnapshot :: Database -> IO (Either Text Snapshot)
-createSnapshot db = do
-  -- Stop postgres gracefully to ensure data is flushed
-  stopResult <- stopPostgres db.process ShutdownGraceful 30
-  case stopResult of
-    Just err -> do
-      -- Restart postgres and return error
-      _ <- restartPostgres db
-      pure $ Left $ "Failed to stop postgres for snapshot: " <> T.pack (show err)
-    Nothing -> do
-      -- Create snapshot directory
-      tmpDir <- getCanonicalTemporaryDirectory
-      snapshotDir <- createTempDirectory tmpDir "ephpg-snap-"
-
-      -- Detect CoW capability
-      cowCapability <- detectCowCapability snapshotDir
-
-      -- Copy data directory to snapshot
-      copyResult <- copyDirectory cowCapability db.dataDirectory snapshotDir
-
-      case copyResult of
-        Left err -> do
-          removeDirectoryIfExists snapshotDir
-          _ <- restartPostgres db
-          pure $ Left $ "Failed to copy data directory: " <> err
-        Right () -> do
-          -- Clean up runtime files from the snapshot
-          cleanupRuntimeFiles snapshotDir
-
-          -- Restart postgres
-          restartResult <- restartPostgres db
-          case restartResult of
-            Left err -> do
-              removeDirectoryIfExists snapshotDir
-              pure $ Left err
-            Right _newProcess ->
-              -- Note: We don't update the Database record with the new process
-              -- since Database is immutable. The caller should handle this.
-              pure $
-                Right $
-                  Snapshot
-                    { path = snapshotDir,
-                      temporary = True
-                    }
+createSnapshot db = runExceptT $ do
+  stopPostgresE "snapshot" db
+    `onError` void (restartPostgres db)
+  snapshotDir <- liftIO $ do
+    tmpDir <- getCanonicalTemporaryDirectory
+    createTempDirectory tmpDir "ephpg-snap-"
+  cowCapability <- liftIO $ detectCowCapability snapshotDir
+  withExceptT
+    ("Failed to copy data directory: " <>)
+    (ExceptT $ copyDirectory cowCapability db.dataDirectory snapshotDir)
+    `onError` do
+      removeDirectoryIfExists snapshotDir
+      void $ restartPostgres db
+  liftIO $ cleanupRuntimeFiles snapshotDir
+  -- Note: We don't update the Database record with the new process
+  -- since Database is immutable. The caller should handle this.
+  _ <-
+    ExceptT (restartPostgres db)
+      `onError` removeDirectoryIfExists snapshotDir
+  pure
+    Snapshot
+      { path = snapshotDir,
+        temporary = True
+      }
 
 -- | Restore a database from a snapshot.
 --
 -- This stops postgres, replaces the data directory with the snapshot,
 -- then restarts postgres. The original database content is lost.
 restoreSnapshot :: Snapshot -> Database -> IO (Either Text ())
-restoreSnapshot snapshot db = do
-  -- Verify snapshot exists
-  exists <- doesDirectoryExist snapshot.path
-  if not exists
-    then pure $ Left $ "Snapshot not found: " <> T.pack snapshot.path
-    else do
-      -- Stop postgres
-      stopResult <- stopPostgres db.process ShutdownGraceful 30
-      case stopResult of
-        Just err -> do
-          _ <- restartPostgres db
-          pure $ Left $ "Failed to stop postgres for restore: " <> T.pack (show err)
-        Nothing -> do
-          -- Remove current data directory
-          removeDirectoryIfExists db.dataDirectory
-
-          -- Detect CoW capability
-          cowCapability <- detectCowCapability snapshot.path
-
-          -- Copy snapshot to data directory
-          copyResult <- copyDirectory cowCapability snapshot.path db.dataDirectory
-
-          case copyResult of
-            Left err -> do
-              -- This is bad - data directory is in inconsistent state
-              pure $ Left $ "Failed to restore snapshot, database may be corrupted: " <> err
-            Right () -> do
-              -- Restart postgres
-              restartResult <- restartPostgres db
-              case restartResult of
-                Left err -> pure $ Left err
-                Right _newProcess -> pure $ Right ()
+restoreSnapshot snapshot db = runExceptT $ do
+  exists <- liftIO $ doesDirectoryExist snapshot.path
+  unless exists $
+    throwE $
+      "Snapshot not found: " <> T.pack snapshot.path
+  stopPostgresE "restore" db
+    `onError` void (restartPostgres db)
+  liftIO $ removeDirectoryIfExists db.dataDirectory
+  cowCapability <- liftIO $ detectCowCapability snapshot.path
+  withExceptT
+    ("Failed to restore snapshot, database may be corrupted: " <>)
+    (ExceptT $ copyDirectory cowCapability snapshot.path db.dataDirectory)
+  _ <- ExceptT $ restartPostgres db
+  pure ()
 
 -- | Delete a snapshot.
 --
@@ -157,6 +124,15 @@ deleteSnapshot snapshot =
   if snapshot.temporary
     then removeDirectoryIfExists snapshot.path
     else pure ()
+
+-- | Stop postgres, failing with a descriptive error.
+stopPostgresE :: Text -> Database -> ExceptT Text IO ()
+stopPostgresE purpose db = do
+  stopResult <- liftIO $ stopPostgres db.process ShutdownGraceful 30
+  case stopResult of
+    Just err ->
+      throwE $ "Failed to stop postgres for " <> purpose <> ": " <> T.pack (show err)
+    Nothing -> pure ()
 
 -- | Restart postgres after a snapshot/restore operation.
 restartPostgres :: Database -> IO (Either Text PostgresProcess)

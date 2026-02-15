@@ -34,7 +34,11 @@ module EphemeralPg.Dump
 where
 
 import Control.Exception (SomeException, try)
+import Control.Monad (when)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Data.ByteString.Lazy qualified as LBS
+import Data.Function ((&))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T
@@ -93,158 +97,90 @@ defaultDumpOptions =
 
 -- | Dump a database to a file.
 dump :: Database -> FilePath -> DumpOptions -> IO (Either Text ())
-dump db outputPath opts = do
-  mPgDump <- findExecutable "pg_dump"
-  case mPgDump of
-    Nothing -> pure $ Left "pg_dump not found in PATH"
-    Just pgDumpPath -> do
-      let args = buildDumpArgs db opts <> ["-f", T.pack outputPath]
-          env = buildEnv db
-          processConfig =
-            proc pgDumpPath (map T.unpack args)
-              & setStdout byteStringOutput
-              & setStderr byteStringOutput
-              & setEnv env
-      result <- try $ readProcess processConfig
-      case result of
-        Left (ex :: SomeException) ->
-          pure $ Left $ "pg_dump failed: " <> T.pack (show ex)
-        Right (exitCode, _stdout, stderr) ->
-          case exitCode of
-            ExitSuccess -> pure $ Right ()
-            ExitFailure code ->
-              pure $
-                Left $
-                  "pg_dump failed with code "
-                    <> T.pack (show code)
-                    <> ": "
-                    <> T.decodeUtf8Lenient (LBS.toStrict stderr)
-  where
-    (&) = flip ($)
+dump db outputPath opts = runExceptT $ do
+  pgDumpPath <- findExecutableE "pg_dump"
+  let args = buildDumpArgs db opts <> ["-f", T.pack outputPath]
+  _ <- runToolE "pg_dump" pgDumpPath args (buildEnv db)
+  pure ()
 
 -- | Dump a database and return the dump as text.
 --
 -- Only works with DumpPlain format.
 dumpToText :: Database -> DumpOptions -> IO (Either Text Text)
-dumpToText db opts = do
-  if opts.format /= DumpPlain
-    then pure $ Left "dumpToText only works with DumpPlain format"
-    else do
-      mPgDump <- findExecutable "pg_dump"
-      case mPgDump of
-        Nothing -> pure $ Left "pg_dump not found in PATH"
-        Just pgDumpPath -> do
-          let args = buildDumpArgs db opts
-              env = buildEnv db
-              processConfig =
-                proc pgDumpPath (map T.unpack args)
-                  & setStdout byteStringOutput
-                  & setStderr byteStringOutput
-                  & setEnv env
-          result <- try $ readProcess processConfig
-          case result of
-            Left (ex :: SomeException) ->
-              pure $ Left $ "pg_dump failed: " <> T.pack (show ex)
-            Right (exitCode, stdout, stderr) ->
-              case exitCode of
-                ExitSuccess -> pure $ Right $ T.decodeUtf8Lenient $ LBS.toStrict stdout
-                ExitFailure code ->
-                  pure $
-                    Left $
-                      "pg_dump failed with code "
-                        <> T.pack (show code)
-                        <> ": "
-                        <> T.decodeUtf8Lenient (LBS.toStrict stderr)
-  where
-    (&) = flip ($)
+dumpToText db opts = runExceptT $ do
+  when (opts.format /= DumpPlain) $
+    throwE "dumpToText only works with DumpPlain format"
+  pgDumpPath <- findExecutableE "pg_dump"
+  let args = buildDumpArgs db opts
+  (stdout, _) <- runToolE "pg_dump" pgDumpPath args (buildEnv db)
+  pure $ T.decodeUtf8Lenient $ LBS.toStrict stdout
 
 -- | Restore a database from a dump file.
 restore :: Database -> FilePath -> IO (Either Text ())
-restore db inputPath = do
-  mPsql <- findExecutable "psql"
-  case mPsql of
-    Nothing -> pure $ Left "psql not found in PATH"
-    Just psqlPath -> do
-      let args =
-            [ "-h",
-              T.pack db.socketDirectory,
-              "-p",
-              T.pack $ show db.port,
-              "-U",
-              db.user,
-              "-d",
-              db.databaseName,
-              "-f",
-              T.pack inputPath,
-              "-v",
-              "ON_ERROR_STOP=1"
-            ]
-          env = buildEnv db
-          processConfig =
-            proc psqlPath (map T.unpack args)
-              & setStdout byteStringOutput
-              & setStderr byteStringOutput
-              & setEnv env
-      result <- try $ readProcess processConfig
-      case result of
-        Left (ex :: SomeException) ->
-          pure $ Left $ "psql restore failed: " <> T.pack (show ex)
-        Right (exitCode, _stdout, stderr) ->
-          case exitCode of
-            ExitSuccess -> pure $ Right ()
-            ExitFailure code ->
-              pure $
-                Left $
-                  "psql restore failed with code "
-                    <> T.pack (show code)
-                    <> ": "
-                    <> T.decodeUtf8Lenient (LBS.toStrict stderr)
-  where
-    (&) = flip ($)
+restore db inputPath = runExceptT $ do
+  psqlPath <- findExecutableE "psql"
+  let args = buildPsqlArgs db <> ["-f", T.pack inputPath]
+  _ <- runToolE "psql restore" psqlPath args (buildEnv db)
+  pure ()
 
 -- | Restore a database from SQL text.
 restoreFromText :: Database -> Text -> IO (Either Text ())
-restoreFromText db sqlText = do
-  mPsql <- findExecutable "psql"
-  case mPsql of
-    Nothing -> pure $ Left "psql not found in PATH"
-    Just psqlPath -> do
-      let args =
-            [ "-h",
-              T.pack db.socketDirectory,
-              "-p",
-              T.pack $ show db.port,
-              "-U",
-              db.user,
-              "-d",
-              db.databaseName,
-              "-c",
-              sqlText,
-              "-v",
-              "ON_ERROR_STOP=1"
-            ]
-          env = buildEnv db
-          processConfig =
-            proc psqlPath (map T.unpack args)
-              & setStdout byteStringOutput
-              & setStderr byteStringOutput
-              & setEnv env
-      result <- try $ readProcess processConfig
-      case result of
-        Left (ex :: SomeException) ->
-          pure $ Left $ "psql restore failed: " <> T.pack (show ex)
-        Right (exitCode, _stdout, stderr) ->
-          case exitCode of
-            ExitSuccess -> pure $ Right ()
-            ExitFailure code ->
-              pure $
-                Left $
-                  "psql restore failed with code "
-                    <> T.pack (show code)
-                    <> ": "
-                    <> T.decodeUtf8Lenient (LBS.toStrict stderr)
+restoreFromText db sqlText = runExceptT $ do
+  psqlPath <- findExecutableE "psql"
+  let args = buildPsqlArgs db <> ["-c", sqlText]
+  _ <- runToolE "psql restore" psqlPath args (buildEnv db)
+  pure ()
+
+-- | Find an executable in PATH or fail with a descriptive error.
+findExecutableE :: String -> ExceptT Text IO FilePath
+findExecutableE name = do
+  mPath <- liftIO $ findExecutable name
+  case mPath of
+    Nothing -> throwE $ T.pack name <> " not found in PATH"
+    Just path -> pure path
+
+-- | Run an external tool, handling exceptions and non-zero exit codes.
+runToolE ::
+  Text ->
+  FilePath ->
+  [Text] ->
+  [(String, String)] ->
+  ExceptT Text IO (LBS.ByteString, LBS.ByteString)
+runToolE toolName exePath args env = do
+  result <- liftIO $ try $ readProcess processConfig
+  case result of
+    Left (ex :: SomeException) ->
+      throwE $ toolName <> " failed: " <> T.pack (show ex)
+    Right (ExitSuccess, stdout, stderr) ->
+      pure (stdout, stderr)
+    Right (ExitFailure code, _, stderr) ->
+      throwE $
+        toolName
+          <> " failed with code "
+          <> T.pack (show code)
+          <> ": "
+          <> T.decodeUtf8Lenient (LBS.toStrict stderr)
   where
-    (&) = flip ($)
+    processConfig =
+      proc exePath (map T.unpack args)
+        & setStdout byteStringOutput
+        & setStderr byteStringOutput
+        & setEnv env
+
+-- | Common psql arguments for restore operations.
+buildPsqlArgs :: Database -> [Text]
+buildPsqlArgs db =
+  [ "-h",
+    T.pack db.socketDirectory,
+    "-p",
+    T.pack $ show db.port,
+    "-U",
+    db.user,
+    "-d",
+    db.databaseName,
+    "-v",
+    "ON_ERROR_STOP=1"
+  ]
 
 -- | Build pg_dump command line arguments.
 buildDumpArgs :: Database -> DumpOptions -> [Text]

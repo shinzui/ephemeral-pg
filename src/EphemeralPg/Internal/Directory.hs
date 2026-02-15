@@ -18,10 +18,13 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, catch, try)
 import Control.Monad (when)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Data.Text (Text)
 import Data.Text qualified as T
 import EphemeralPg.Config (DirectoryConfig (..), maxSocketPathLength)
 import EphemeralPg.Error (ConfigError (..), ResourceError (..), StartError (..))
+import EphemeralPg.Internal.Except (onError)
 import System.Directory
   ( createDirectoryIfMissing,
     doesDirectoryExist,
@@ -34,36 +37,22 @@ import System.IO.Temp (createTempDirectory)
 --
 -- Returns the path and whether it should be cleaned up.
 createTempDataDirectory :: Maybe FilePath -> IO (Either StartError (FilePath, Bool))
-createTempDataDirectory mTempRoot = do
-  tmpRoot <- maybe getTemporaryDirectory pure mTempRoot
-  result <- try $ createTempDirectory tmpRoot "ephpg-data-"
-  case result of
-    Left (e :: SomeException) ->
-      pure $ Left $ ResourceError $ DirectoryCreationFailed tmpRoot (T.pack $ show e)
-    Right path ->
-      pure $ Right (path, True)
+createTempDataDirectory mTempRoot = runExceptT $ do
+  tmpRoot <- liftIO $ maybe getTemporaryDirectory pure mTempRoot
+  path <- tryDirCreate tmpRoot $ createTempDirectory tmpRoot "ephpg-data-"
+  pure (path, True)
 
 -- | Create a temporary socket directory.
 --
 -- Uses short names to avoid Unix socket path length limits.
 -- Returns the path and whether it should be cleaned up.
 createTempSocketDirectory :: Maybe FilePath -> IO (Either StartError (FilePath, Bool))
-createTempSocketDirectory mTempRoot = do
-  tmpRoot <- maybe getTemporaryDirectory pure mTempRoot
-  -- Use very short prefix to minimize socket path length
-  result <- try $ createTempDirectory tmpRoot "pg-"
-  case result of
-    Left (e :: SomeException) ->
-      pure $ Left $ ResourceError $ DirectoryCreationFailed tmpRoot (T.pack $ show e)
-    Right path -> do
-      -- Validate the socket path length
-      case validateSocketPath path of
-        Left err -> do
-          -- Clean up the directory we just created
-          removeDirectoryIfExists path
-          pure $ Left err
-        Right () ->
-          pure $ Right (path, True)
+createTempSocketDirectory mTempRoot = runExceptT $ do
+  tmpRoot <- liftIO $ maybe getTemporaryDirectory pure mTempRoot
+  path <- tryDirCreate tmpRoot $ createTempDirectory tmpRoot "pg-"
+  either throwE pure (validateSocketPath path)
+    `onError` removeDirectoryIfExists path
+  pure (path, True)
 
 -- | Resolve a directory configuration to an actual path.
 --
@@ -81,13 +70,9 @@ resolveDirectory config mTempRoot _purpose creator =
   case config of
     DirectoryTemporary ->
       creator mTempRoot
-    DirectoryPermanent path -> do
-      result <- try $ createDirectoryIfMissing True path
-      case result of
-        Left (e :: SomeException) ->
-          pure $ Left $ ResourceError $ DirectoryCreationFailed path (T.pack $ show e)
-        Right () ->
-          pure $ Right (path, False)
+    DirectoryPermanent path -> runExceptT $ do
+      tryDirCreate path $ createDirectoryIfMissing True path
+      pure (path, False)
 
 -- | Validate that a socket path won't exceed Unix limits.
 --
@@ -126,22 +111,22 @@ removeDirectoryIfExists path = do
 retryRemoveDirectory :: FilePath -> Int -> Int -> IO (Either Text ())
 retryRemoveDirectory path maxRetries delayMicros = go maxRetries
   where
-    go 0 = do
-      result <- try $ removeDirectoryRecursive path
-      case result of
-        Left (e :: SomeException) ->
-          pure $ Left $ "Failed after " <> T.pack (show maxRetries) <> " retries: " <> T.pack (show e)
-        Right () ->
-          pure $ Right ()
     go n = do
       result <- try $ removeDirectoryRecursive path
       case result of
-        Left (_ :: SomeException) -> do
-          -- Wait and retry
-          threadDelayMicros delayMicros
-          go (n - 1)
-        Right () ->
-          pure $ Right ()
+        Right () -> pure $ Right ()
+        Left (e :: SomeException)
+          | n <= 0 ->
+              pure $ Left $ "Failed after " <> T.pack (show maxRetries) <> " retries: " <> T.pack (show e)
+          | otherwise -> do
+              threadDelay delayMicros
+              go (n - 1)
 
-    threadDelayMicros :: Int -> IO ()
-    threadDelayMicros = threadDelay
+-- | Try an IO action, converting exceptions to 'DirectoryCreationFailed'.
+tryDirCreate :: FilePath -> IO a -> ExceptT StartError IO a
+tryDirCreate dir action = do
+  result <- liftIO $ try action
+  case result of
+    Left (e :: SomeException) ->
+      throwE $ ResourceError $ DirectoryCreationFailed dir (T.pack $ show e)
+    Right a -> pure a
