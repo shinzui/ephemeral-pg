@@ -174,7 +174,12 @@ waitForPostgres socketDir port timeoutSecs = do
                   "-t",
                   "1" -- 1 second timeout per attempt
                 ]
-          result <- try @SomeException $ runProcess $ proc pgIsReadyPath args
+          result <-
+            try @SomeException $
+              runProcess $
+                proc pgIsReadyPath args
+                  & setStdout nullStream
+                  & setStderr nullStream
           case result of
             Right ExitSuccess -> pure ()
             _ -> do
