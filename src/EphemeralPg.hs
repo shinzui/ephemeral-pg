@@ -233,7 +233,9 @@ start config = runStartup $ do
         process = pgProcess,
         cleanup = cleanupAction,
         dataDirIsTemp = dataDirIsTemp,
-        socketDirIsTemp = socketDirIsTemp
+        socketDirIsTemp = socketDirIsTemp,
+        shutdownMode = resolveShutdownMode config,
+        shutdownTimeoutSeconds = resolveShutdownTimeout config
       }
   where
     cleanup :: Bool -> FilePath -> Bool -> FilePath -> IO ()
@@ -253,19 +255,26 @@ getUsername config = case config.user of
   "" -> getCurrentUser
   u -> pure u
 
+-- | Resolve shutdown mode from config, falling back to default.
+resolveShutdownMode :: Config -> ShutdownMode
+resolveShutdownMode config =
+  maybe ShutdownGraceful id $ getLast config.shutdownMode
+
+-- | Resolve shutdown timeout from config, falling back to default.
+resolveShutdownTimeout :: Config -> Int
+resolveShutdownTimeout config =
+  maybe defaultShutdownTimeoutSeconds id $ getLast config.shutdownTimeoutSeconds
+
 -- | Stop a database and clean up resources.
 --
--- This sends SIGTERM to postgres and waits for graceful shutdown,
--- then removes temporary directories.
+-- Uses the shutdown mode and timeout from the configuration that was
+-- used to start the database.
 --
 -- Safe to call multiple times (subsequent calls are no-ops).
 stop :: Database -> IO ()
 stop db = do
-  let mode = ShutdownGraceful
-  let timeoutSecs = defaultShutdownTimeoutSeconds
-
-  -- Stop postgres
-  _ <- stopPostgres db.process mode timeoutSecs
+  -- Stop postgres using configured shutdown mode and timeout
+  _ <- stopPostgres db.process db.shutdownMode db.shutdownTimeoutSeconds
 
   -- Run cleanup (removes temp directories)
   db.cleanup
@@ -292,9 +301,9 @@ stop db = do
 -- @
 restart :: Database -> IO (Either StartError Database)
 restart db = runStartup $ do
-  -- Stop postgres gracefully
+  -- Stop postgres using configured shutdown settings
   liftIO $ do
-    _ <- stopPostgres db.process ShutdownGraceful defaultShutdownTimeoutSeconds
+    _ <- stopPostgres db.process db.shutdownMode db.shutdownTimeoutSeconds
     pure ()
 
   -- Start postgres again with the same configuration
@@ -455,7 +464,9 @@ continueStartup config dataDir dataDirIsTemp = runStartup $ do
         process = pgProcess,
         cleanup = cleanupAction,
         dataDirIsTemp = dataDirIsTemp,
-        socketDirIsTemp = socketDirIsTemp
+        socketDirIsTemp = socketDirIsTemp,
+        shutdownMode = resolveShutdownMode config,
+        shutdownTimeoutSeconds = resolveShutdownTimeout config
       }
   where
     cleanupDirs :: Bool -> FilePath -> Bool -> FilePath -> IO ()

@@ -16,6 +16,7 @@ where
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Word (Word16)
+import EphemeralPg.Config (ShutdownMode (..))
 import Hasql.Connection.Settings qualified as Settings
 import System.Posix.Types (CPid)
 import System.Process.Typed (Process)
@@ -56,7 +57,11 @@ data Database = Database
     -- | Whether data directory is temporary
     dataDirIsTemp :: Bool,
     -- | Whether socket directory is temporary
-    socketDirIsTemp :: Bool
+    socketDirIsTemp :: Bool,
+    -- | How to shut down postgres (from config)
+    shutdownMode :: ShutdownMode,
+    -- | Timeout for shutdown in seconds (from config)
+    shutdownTimeoutSeconds :: Int
   }
 
 instance Show Database where

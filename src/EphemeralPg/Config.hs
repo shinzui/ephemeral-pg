@@ -163,7 +163,7 @@ defaultConnectionTimeoutSeconds = 60
 
 -- | Default shutdown timeout in seconds.
 defaultShutdownTimeoutSeconds :: Int
-defaultShutdownTimeoutSeconds = 30
+defaultShutdownTimeoutSeconds = 5
 
 -- | Default PostgreSQL settings optimized for testing.
 --
@@ -221,7 +221,7 @@ defaultConfig =
       createDbArgs = [],
       connectionTimeoutSeconds = Last (Just defaultConnectionTimeoutSeconds),
       shutdownTimeoutSeconds = Last (Just defaultShutdownTimeoutSeconds),
-      shutdownMode = Last (Just ShutdownGraceful),
+      shutdownMode = Last (Just ShutdownFast),
       stdout = Last (Just Nothing), -- Discard by default
       stderr = Last (Just Nothing) -- Discard by default
     }
