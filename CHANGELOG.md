@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0.1
+
+### Bug Fixes
+
+- Suppress pg_isready stdout/stderr during connection polling
+
 ## 0.2.0.0
 
 ### Breaking Changes
