@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1.0
+
+### Bug Fixes
+
+- Fix `stop` and `restart` ignoring configured shutdown mode and timeout — they
+  were hardcoding `ShutdownGraceful` with a 30-second timeout instead of using
+  the config values, causing `with`/`withCached` to block unnecessarily on shutdown
+
+### Other Changes
+
+- Change default shutdown mode to `ShutdownFast` (SIGINT) with a 5-second
+  timeout, which is more appropriate for a testing library
+
 ## 0.2.0.1
 
 ### Bug Fixes
