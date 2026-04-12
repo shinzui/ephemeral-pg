@@ -1,6 +1,6 @@
 let Schema =
-      https://raw.githubusercontent.com/shinzui/mori-schema/4412469f2960b8faa48c123451bf90c0d3400db3/package.dhall
-        sha256:2e416c2d8c28c0b3b217cab47cc6d9e8bb9bec34b87d476edbb0d6d0863d1401
+      https://raw.githubusercontent.com/shinzui/mori-schema/8415b4b8a746a84eecf982f0f1d7194368bf7b54/package.dhall
+        sha256:d19ae156d6c357d982a1aea0f1b6ba1f01d76d2d848545b150db75ed4c39a8a9
 
 in  { project =
       { name = "ephemeral-pg"
@@ -29,16 +29,19 @@ in  { project =
         , path = Some "."
         , description = Some
             "Temporary PostgreSQL databases for testing with initdb caching, copy-on-write support, and native hasql integration"
+        , lifecycle = None Schema.Lifecycle
         , visibility = Schema.Visibility.Public
         , runtime =
           { deployable = False
           , exposesApi = False
           }
+        , runtimeEnvironment = None Schema.RuntimeEnvironment
         , dependencies =
           [ Schema.Dependency.ByName "hasql/hasql"
           ]
         , docs = [] : List Schema.DocRef
         , config = [] : List Schema.ConfigItem
+        , apiSource = None Schema.ApiSource
         }
       ]
     , bundles = [] : List Schema.PackageBundle
@@ -47,6 +50,8 @@ in  { project =
       ]
     , apis = [] : List Schema.Api
     , agents = [] : List Schema.AgentHint
+    , skills = [] : List Schema.Skill
+    , subagents = [] : List Schema.Subagent
     , standards = [] : List Text
     , docs =
       [ { key = "readme"
