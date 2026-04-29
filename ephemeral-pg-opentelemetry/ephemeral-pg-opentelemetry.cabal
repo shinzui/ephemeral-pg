@@ -42,10 +42,12 @@ library
     ephemeral-pg,
     hs-opentelemetry-api >=0.3 && <0.4,
     text >=2.0 && <2.2,
+    unordered-containers >=0.2 && <0.3,
 
   default-extensions:
     BlockArguments
     LambdaCase
+    OverloadedRecordDot
     OverloadedStrings
     TemplateHaskell
 
@@ -74,4 +76,29 @@ test-suite ephemeral-pg-opentelemetry-demo
   default-extensions:
     BlockArguments
     LambdaCase
+    OverloadedStrings
+
+test-suite ephemeral-pg-opentelemetry-test
+  import: warnings
+  default-language: GHC2021
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Spec.hs
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends:
+    base,
+    ephemeral-pg-opentelemetry,
+    hs-opentelemetry-api,
+    hs-opentelemetry-exporter-in-memory,
+    hspec >=2.11 && <2.12,
+    text,
+
+  default-extensions:
+    BlockArguments
+    LambdaCase
+    OverloadedRecordDot
     OverloadedStrings

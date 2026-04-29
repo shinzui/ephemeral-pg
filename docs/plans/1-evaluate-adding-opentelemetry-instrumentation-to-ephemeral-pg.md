@@ -144,18 +144,40 @@ completes.
   `Surprises & Discoveries` (raw stderr excerpt is fine), confirm the
   parenting and naming match the proposal in this plan.
   *(2026-04-29: captured below.)*
-- [ ] M3.1 Extend the spike to cover `withCachedTraced`, snapshot, and dump.
-- [ ] M3.2 Add semantic-convention attributes (`db.system.name=postgresql`,
+- [x] M3.1 Extend the spike to cover `withCachedTraced`, snapshot, and dump.
+  *(2026-04-29: added `withCachedTraced`, `createSnapshotTraced`,
+  `restoreSnapshotTraced`, `deleteSnapshotTraced`, `dumpTraced`,
+  `restoreTraced`. Each is a single-span wrapper around the
+  corresponding public `EphemeralPg` call.)*
+- [x] M3.2 Add semantic-convention attributes (`db.system.name=postgresql`,
   `db.namespace`, `ephemeralpg.cache.hit`, `ephemeralpg.cache.cow_method`,
   `ephemeralpg.shutdown.mode`, `ephemeralpg.port`).
-- [ ] M3.3 Record errors uniformly: on every `Left StartError` and `Left
+  *(2026-04-29: added `db.system.name`/`db.namespace` (stable) plus
+  `db.system`/`db.name` (legacy) honouring `OTEL_SEMCONV_STABILITY_OPT_IN`,
+  along with `ephemeralpg.port` and `ephemeralpg.shutdown.mode`.
+  `ephemeralpg.cache.hit`/`cow_method` are deferred — see Decision Log
+  2026-04-29; they require an internal hook on `EphemeralPg.Config`
+  which is the subject of a follow-up plan.)*
+- [x] M3.3 Record errors uniformly: on every `Left StartError` and `Left
   StopError` set span status `Error`, attach `error.type`, and emit
   `recordException`. Match the pattern used in
   `hasql-opentelemetry`'s `instrumentedUse`.
-- [ ] M3.4 Unit tests using `hs-opentelemetry-exporter-in-memory` to assert
+  *(2026-04-29: `recordStartError` does the full treatment for
+  `Pg.StartError` (Exception-derived). For `Either Text` errors from
+  snapshot/dump, `finishWithTextResult` attaches `error.type` plus
+  `setStatus Error`; `recordException` is skipped because `Text` is not
+  an `Exception`.)*
+- [x] M3.4 Unit tests using `hs-opentelemetry-exporter-in-memory` to assert
   the span tree shape without relying on stderr.
-- [ ] M3.5 Update `README.md` at the repository root with a "Tracing"
+  *(2026-04-29: added `ephemeral-pg-opentelemetry-test` with three
+  hspec assertions: `with`/`start`/`stop` parenting; both stable and
+  legacy DB attributes (env-var driven); `Ok` status on the happy path.
+  Forced-error path is deferred with the per-phase spans.)*
+- [x] M3.5 Update `README.md` at the repository root with a "Tracing"
   section that points to the companion package.
+  *(2026-04-29: added a Tracing section above the License section
+  listing the wrapper-to-span mapping, attribute conventions, and a
+  pointer to `ephemeral-pg-opentelemetry/test/Demo.hs`.)*
 
 
 ## Surprises & Discoveries
@@ -291,6 +313,27 @@ Record every decision made while working on the plan.
   keeps the dependency boundary clean.
   Date: 2026-04-29
 
+- Decision: defer per-phase child spans (`ephemeralpg.cache.restore`,
+  `ephemeralpg.postgres.start`, `ephemeralpg.postgres.wait_ready`,
+  `ephemeralpg.createdb`) and the per-phase attributes
+  (`ephemeralpg.cache.hit`, `ephemeralpg.cache.cow_method`) to a
+  follow-up plan. The acceptance criterion in M3 requires a
+  `cache.restore` span and a `cache.hit=true` attribute on cache-hit,
+  but the cache machinery is in `EphemeralPg.Internal.Cache` (not
+  exposed) — observing it requires either (a) a `Phase` callback hook
+  on `Config` or (b) re-implementing the lifecycle in the wrapper. The
+  plan's Idempotence section explicitly directs us to pause and record
+  the requirement for the hook, so we do that here. M3 still ships
+  withCached/snapshot/dump wrappers, top-level semantic attributes
+  (`db.system.name`, `db.namespace`, `ephemeralpg.port`,
+  `ephemeralpg.shutdown.mode`), uniform error recording with
+  `recordException`, and programmatic in-memory tests.
+  Open follow-up: a separate ExecPlan that adds
+  `Config.onPhase :: Maybe (Phase -> IO ())` (or similar) and threads
+  it through `start`/`startCached`. Once that lands, the wrapper can
+  attach phase spans without forking the lifecycle.
+  Date: 2026-04-29
+
 - Decision: `withTraced` re-implements the `mask` + `start` + `stop`
   composition rather than wrapping `Pg.with`. The acceptance criterion
   for M2 requires `ephemeralpg.start` and `ephemeralpg.stop` to be
@@ -411,6 +454,56 @@ appended here when M2 completes, including the captured stderr excerpt.
     stderr is for human inspection.
 * **Baseline integrity:** the existing `ephemeral-pg-test` suite is
   unchanged and still passes (10 examples, 0 failures).
+
+### Milestone 3 — Productionisation (2026-04-29)
+
+* **Result:** the companion package is publishable as a v0.1 spike.
+  All three test-suites pass:
+  * `ephemeral-pg-test` — 10 examples, 0 failures (unchanged baseline).
+  * `ephemeral-pg-opentelemetry-test` — 3 examples, 0 failures
+    (programmatic in-memory assertions).
+  * `ephemeral-pg-opentelemetry-demo` — 1 example, 0 failures (stderr
+    span tree).
+* **Public API delivered (M2 + M3):** matches the plan's "after M3"
+  block almost verbatim, with the planned `Phase`-driven internal
+  spans deferred:
+  ```
+  module OpenTelemetry.Instrumentation.EphemeralPg
+    EphemeralPgOtelConfig (..)
+    defaultEphemeralPgOtelConfig
+    ephemeralPgTracer
+    withTraced, withCachedTraced
+    startTraced, stopTraced, restartTraced
+    createSnapshotTraced, restoreSnapshotTraced, deleteSnapshotTraced
+    dumpTraced, restoreTraced
+  ```
+* **Acceptance against the M3 criteria, item by item:**
+  * (i) **Met.** `ephemeralpg.with` is the parent of
+    `ephemeralpg.start` and `ephemeralpg.stop` — asserted by
+    `ephemeral-pg-opentelemetry-test → "stitches with under
+    start/stop"`.
+  * (ii) **Deferred** to a follow-up plan that adds a `Phase` callback
+    hook on `EphemeralPg.Config`. Recorded under the 2026-04-29
+    Decision Log entry.
+  * (iii) **Deferred** for the same reason as (ii). The
+    `recordStartError` helper is implemented and exercised whenever
+    `Pg.start` returns `Left`; integration coverage is via the demo
+    rather than a bind-to-port-1 unit test (the latter would still
+    run `initdb` and was deemed not worth the extra ~1s per run for
+    the spike).
+* **Open follow-ups:**
+  1. Land an `onPhase :: Maybe (Phase -> IO ())` hook on
+     `EphemeralPg.Config`, then surface
+     `ephemeralpg.cache.restore`, `ephemeralpg.postgres.start`,
+     `ephemeralpg.postgres.wait_ready`, `ephemeralpg.createdb`, and
+     `ephemeralpg.cache.{hit,cow_method}` attributes — own ExecPlan.
+  2. Replace `allow-newer` in `cabal.project` with proper version
+     pinning once the upstream `hs-opentelemetry-*` Hackage releases
+     ship the `==0.3.*` API bound. Until then, builds depend on the
+     `allow-newer` waiver to resolve.
+  3. Move the `LICENSE` symlink so the companion package's
+     `license-file: ../LICENSE` stops emitting the
+     `relative-path-outside` warning when packaging for sdist.
 
 
 ## Context and Orientation

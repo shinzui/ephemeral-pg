@@ -431,6 +431,61 @@ the full path is under 90 characters.
 Ensure you have write access to the temporary directory. By default, the
 system temp directory is used.
 
+## Tracing
+
+OpenTelemetry tracing is available through the optional companion
+package `ephemeral-pg-opentelemetry`, which lives next to this library
+in the same repository. It mirrors the `EphemeralPg` lifecycle API and
+emits one span per public operation:
+
+| Wrapper                      | Span name                       |
+| ---------------------------- | ------------------------------- |
+| `withTraced`                 | `ephemeralpg.with`              |
+| `withCachedTraced`           | `ephemeralpg.with_cached`       |
+| `startTraced`                | `ephemeralpg.start`             |
+| `stopTraced`                 | `ephemeralpg.stop`              |
+| `restartTraced`              | `ephemeralpg.restart`           |
+| `createSnapshotTraced`       | `ephemeralpg.snapshot.create`   |
+| `restoreSnapshotTraced`      | `ephemeralpg.snapshot.restore`  |
+| `deleteSnapshotTraced`       | `ephemeralpg.snapshot.delete`   |
+| `dumpTraced`                 | `ephemeralpg.dump`              |
+| `restoreTraced`              | `ephemeralpg.restore`           |
+
+Each span carries the standard database attributes
+(`db.system.name`/`db.system`, `db.namespace`/`db.name`) plus
+library-specific ones (`ephemeralpg.port`,
+`ephemeralpg.shutdown.mode`). Attribute name selection obeys
+`OTEL_SEMCONV_STABILITY_OPT_IN` exactly the way upstream HTTP
+instrumentation does — set it to `http` for stable names, `http/dup`
+for both stable and legacy. Errors from `EphemeralPg.start` are
+recorded uniformly with `error.type` (constructor name), span status
+`Error`, and a `recordException` event.
+
+The wrappers are designed to nest under a parent test span. Combined
+with `hs-opentelemetry-instrumentation-hspec`, a test that calls
+`withTraced` produces a tree of the form:
+
+    Run tests
+      └─ ephemeral-pg under OpenTelemetry
+         └─ emits a span tree under withTraced
+            └─ ephemeralpg.with
+               ├─ ephemeralpg.start
+               ├─ ephemeralpg.with.body
+               └─ ephemeralpg.stop
+
+Add the dependency to your test-suite (the package is not yet on
+Hackage; reference it via the local `cabal.project`):
+
+```cabal
+build-depends:
+  ephemeral-pg-opentelemetry,
+  hs-opentelemetry-api,
+  hs-opentelemetry-sdk,
+  hs-opentelemetry-instrumentation-hspec,
+```
+
+See `ephemeral-pg-opentelemetry/test/Demo.hs` for a runnable example.
+
 ## License
 
 BSD-3-Clause
