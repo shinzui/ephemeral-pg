@@ -116,23 +116,34 @@ completes.
   *(2026-04-29)*
 - [x] M1.3 Decide go / no-go for the spike. Record decision and date in
   `Decision Log`. *(2026-04-29: go.)*
-- [ ] M2.1 Add a new sub-package directory `ephemeral-pg-opentelemetry/`
+- [x] M2.1 Add a new sub-package directory `ephemeral-pg-opentelemetry/`
   with its own cabal file declaring the library. Wire it into a top-level
   `cabal.project` if one does not exist (the repository currently only
   ships a single `ephemeral-pg.cabal`; introducing a sibling package will
-  require a `cabal.project`).
-- [ ] M2.2 Implement the minimal API: `withTraced`, `startTraced`,
+  require a `cabal.project`). *(2026-04-29: amended the existing
+  `cabal.project` rather than creating one; added an `allow-newer` block
+  to waive the published `hs-opentelemetry-*` upper bounds since the
+  Hackage releases predate the local `==0.3.*` fix.)*
+- [x] M2.2 Implement the minimal API: `withTraced`, `startTraced`,
   `stopTraced`, `restartTraced` plus an `OtelConfig` record that carries
   the `Tracer` and a `serviceName`-equivalent. Use `OpenTelemetry.Trace.Core.inSpan`
   for the parent and child spans. Reuse the existing public API of
-  `EphemeralPg` rather than forking it.
-- [ ] M2.3 Add a runnable `test-suite ephemeral-pg-opentelemetry-demo` that
+  `EphemeralPg` rather than forking it. *(2026-04-29: implemented in
+  `ephemeral-pg-opentelemetry/src/OpenTelemetry/Instrumentation/EphemeralPg.hs`.
+  `withTraced` re-implements the `mask`/`onException` composition so
+  `ephemeralpg.start` and `ephemeralpg.stop` show up as visible
+  children — see Decision Log.)*
+- [x] M2.3 Add a runnable `test-suite ephemeral-pg-opentelemetry-demo` that
   uses `hs-opentelemetry-sdk` with a stderr `Handle` exporter, runs one
   `withTraced` call inside an `instrumentSpec`-wrapped hspec block, and
-  prints the resulting span tree to stderr.
-- [ ] M2.4 Capture the actual emitted span tree in
+  prints the resulting span tree to stderr. *(2026-04-29: implemented at
+  `ephemeral-pg-opentelemetry/test/Demo.hs`. Uses a custom
+  `parentAwareFormatter` because the upstream `defaultFormatter` does
+  not include parent IDs.)*
+- [x] M2.4 Capture the actual emitted span tree in
   `Surprises & Discoveries` (raw stderr excerpt is fine), confirm the
   parenting and naming match the proposal in this plan.
+  *(2026-04-29: captured below.)*
 - [ ] M3.1 Extend the spike to cover `withCachedTraced`, snapshot, and dump.
 - [ ] M3.2 Add semantic-convention attributes (`db.system.name=postgresql`,
   `db.namespace`, `ephemeralpg.cache.hit`, `ephemeralpg.cache.cow_method`,
@@ -202,6 +213,41 @@ The bound `^>= 0.3` in the plan's `build-depends` for
 Baseline `cabal test ephemeral-pg-test` (2026-04-29): **10 examples, 0
 failures**, finished in 3.9 seconds. Floor is intact.
 
+### M2.4 — captured span tree (2026-04-29)
+
+`cabal test ephemeral-pg-opentelemetry-demo --test-show-details=streaming`,
+relevant stderr lines (one record per emitted span, fields are
+`trace=<traceId> span=<spanId> parent=<parentSpanId>
+status=<unset|ok|error:msg> name=<name>`; emitted in completion order
+under hspec's parallel runner):
+
+    trace=0c406f2ed4126c2120b6027238f4a0c2 span=da06a898e98294eb parent=43cbd5f5c8f9a05b status=ok    name=ephemeralpg.with
+    trace=0c406f2ed4126c2120b6027238f4a0c2 span=989097703a40c0dc parent=da06a898e98294eb status=ok    name=ephemeralpg.stop
+    trace=0c406f2ed4126c2120b6027238f4a0c2 span=eee6d36d7dc45a80 parent=da06a898e98294eb status=unset name=ephemeralpg.with.body
+    trace=0c406f2ed4126c2120b6027238f4a0c2 span=6fc1b1887c64e1be parent=da06a898e98294eb status=ok    name=ephemeralpg.start
+    trace=0c406f2ed4126c2120b6027238f4a0c2 span=000fd17341bc07a9 parent=ROOT             status=unset name=Run tests
+    trace=0c406f2ed4126c2120b6027238f4a0c2 span=d31be2b2725cf166 parent=000fd17341bc07a9 status=unset name=ephemeral-pg under OpenTelemetry
+    trace=0c406f2ed4126c2120b6027238f4a0c2 span=43cbd5f5c8f9a05b parent=d31be2b2725cf166 status=unset name=emits a span tree under withTraced
+
+Reordering by parent links gives the tree the plan predicts:
+
+    Run tests                                   (000fd173…)
+      └─ ephemeral-pg under OpenTelemetry      (d31be2b2…)         describe
+         └─ emits a span tree under withTraced (43cbd5f5…)         it
+            └─ ephemeralpg.with                (da06a898…)
+               ├─ ephemeralpg.start            (6fc1b188…)
+               ├─ ephemeralpg.with.body        (eee6d36d…)
+               └─ ephemeralpg.stop             (98909770…)
+
+All seven spans share `trace=0c406f2e…0c2`, satisfying the M2 acceptance
+criterion: `it ›  ephemeralpg.with ›  ephemeralpg.start` and
+`it ›  ephemeralpg.with ›  ephemeralpg.stop` are visible
+ancestor/descendant pairs by ID. The `ephemeralpg.with.body` span
+captures the user action and is, as designed, a sibling of start/stop
+under `ephemeralpg.with`. `status=unset` on the hspec-emitted spans is
+expected — `instrumentSpec` does not call `setStatus` so the default
+(Unset) is used.
+
 
 ## Decision Log
 
@@ -243,6 +289,18 @@ Record every decision made while working on the plan.
   to depend on three additional `hs-opentelemetry-*` packages. A separate
   `ephemeral-pg-opentelemetry-demo` test-suite in the new sub-package
   keeps the dependency boundary clean.
+  Date: 2026-04-29
+
+- Decision: `withTraced` re-implements the `mask` + `start` + `stop`
+  composition rather than wrapping `Pg.with`. The acceptance criterion
+  for M2 requires `ephemeralpg.start` and `ephemeralpg.stop` to be
+  visible *children* of `ephemeralpg.with`. Calling `Pg.with` wraps
+  start and stop opaquely inside one IO action, so they would never
+  surface as their own spans. Re-implementing means three lines of
+  `mask`/`onException` from `EphemeralPg.with` are duplicated in the
+  wrapper. We keep using `Pg.start` and `Pg.stop` (the public API) — we
+  do not reach into internals — so this stays inside the boundary set
+  by the previous decision ("Reuse the existing public API").
   Date: 2026-04-29
 
 - Decision: **Go** for the spike (Milestone 2). Proceed to scaffold
@@ -319,6 +377,40 @@ appended here when M2 completes, including the captured stderr excerpt.
     The `ephemeralpg.cache.cow_method` attribute therefore varies by
     host — that is desired but worth noting for anyone consuming the
     spans.
+
+### Milestone 2 — Spike (2026-04-29)
+
+* **Result:** the spike works. `cabal test ephemeral-pg-opentelemetry-demo`
+  emits a single trace whose tree is exactly the one this plan
+  predicted (see `Surprises & Discoveries → M2.4`). The test passes —
+  `withTraced` against a real PostgreSQL cluster, started and stopped
+  inside an `it` block, completes in ~0.9s and produces seven spans.
+* **Acceptance against the M2 criterion:** met.
+  `it › ephemeralpg.with › ephemeralpg.start` and
+  `it › ephemeralpg.with › ephemeralpg.stop` are both present as
+  ancestor/descendant pairs in the captured stderr, with all seven
+  spans sharing one trace ID.
+* **Deviations from the plan body:**
+  * `cabal.project` already existed and was *amended* (per Idempotence
+    section) rather than created.
+  * Added an `allow-newer` block waiving the published Hackage
+    `hs-opentelemetry-*` upper bounds. The upstream tree on disk
+    relaxes those bounds to `==0.3.*`; `allow-newer` is the
+    least-invasive way to keep the build resolving against Hackage
+    until those releases are cut. Recorded as a tracked debt for M3
+    (we should switch to `source-repository-package` or
+    `index-state` pinning once the upstream releases are out, so the
+    project remains buildable for downstream users without our
+    on-disk checkout).
+  * `withTraced` is implemented as `mask` + `startTraced'` +
+    `stopTraced'` rather than wrapping `Pg.with` — see Decision Log
+    (2026-04-29). This is required to make the start/stop spans
+    individually visible.
+  * Demo uses a custom `parentAwareFormatter`. M3.4's in-memory
+    exporter assertions remain the durable form of validation;
+    stderr is for human inspection.
+* **Baseline integrity:** the existing `ephemeral-pg-test` suite is
+  unchanged and still passes (10 examples, 0 failures).
 
 
 ## Context and Orientation

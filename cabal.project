@@ -1,2 +1,14 @@
-packages: .
+packages:
+  .
+  ephemeral-pg-opentelemetry/
+
 tests: True
+-- Hackage's published hs-opentelemetry-* releases pin hs-opentelemetry-api
+-- to <0.3, but the upstream tree (mori: iand675/hs-opentelemetry) already
+-- relaxes those bounds to ==0.3.*. The API is compatible; allow-newer
+-- waives the published upper bounds for every package we pull in.
+allow-newer:
+  hs-opentelemetry-instrumentation-hspec:hs-opentelemetry-api,
+  hs-opentelemetry-exporter-handle:hs-opentelemetry-api,
+  hs-opentelemetry-sdk:hs-opentelemetry-api,
+  hs-opentelemetry-exporter-in-memory:hs-opentelemetry-api
