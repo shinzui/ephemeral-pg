@@ -11,3 +11,5 @@ cabal.project.local
 
 .claude/
 db/
+.agents/
+CLAUDE.local.md
