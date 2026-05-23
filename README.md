@@ -158,6 +158,16 @@ cachedTest = do
   pure ()
 ```
 
+### Suite-level fixtures with template databases
+
+For larger integration suites where many examples need the same migrated
+schema, consider starting one cached PostgreSQL server for the whole suite,
+migrating a template database once, and cloning clean per-example databases
+with PostgreSQL's `CREATE DATABASE ... TEMPLATE ...`.
+
+See [Suite-level template databases](docs/suite-template-databases.md) for the
+full pattern, tradeoffs, and a complete fixture implementation.
+
 ### Manual Lifecycle Management
 
 For more control, use `start` and `stop` directly:
