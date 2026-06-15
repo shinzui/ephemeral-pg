@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2.0
+
+### Bug Fixes
+
+- Make initdb cache creation atomic by copying into a same-parent temporary
+  directory and publishing it with an atomic rename. Concurrent cold-cache
+  writers now treat an existing final cache as success instead of exposing a
+  partially-copied `data` directory.
+
 ## 0.2.1.0
 
 ### Bug Fixes

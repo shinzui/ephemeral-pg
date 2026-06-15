@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: ephemeral-pg
-version: 0.2.1.0
+version: 0.2.2.0
 synopsis: Temporary PostgreSQL databases for testing
 description:
   A modern library for creating temporary PostgreSQL instances for testing.
@@ -84,18 +84,52 @@ test-suite ephemeral-pg-test
   import: warnings
   default-language: GHC2021
   type: exitcode-stdio-1.0
-  hs-source-dirs: test
+  hs-source-dirs:
+    test
+    src
+
   main-is: Main.hs
+  other-modules:
+    EphemeralPg
+    EphemeralPg.Config
+    EphemeralPg.Database
+    EphemeralPg.Error
+    EphemeralPg.Internal.Cache
+    EphemeralPg.Internal.CopyOnWrite
+    EphemeralPg.Internal.Directory
+    EphemeralPg.Internal.Except
+    EphemeralPg.Internal.Port
+    EphemeralPg.Process
+    EphemeralPg.Process.CreateDb
+    EphemeralPg.Process.InitDb
+    EphemeralPg.Process.Postgres
+
   build-depends:
     QuickCheck >=2.14 && <2.16,
     base,
+    bytestring,
+    directory,
     ephemeral-pg,
+    filepath,
+    hashable,
     hasql,
     hspec >=2.11 && <2.12,
+    network,
+    process,
+    temporary,
     text,
+    transformers,
+    typed-process,
+    unix,
 
   default-extensions:
     BlockArguments
+    DeriveAnyClass
+    DerivingStrategies
     DuplicateRecordFields
+    LambdaCase
+    NoFieldSelectors
     OverloadedRecordDot
     OverloadedStrings
+    RecordWildCards
+    StrictData

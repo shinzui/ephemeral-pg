@@ -42,6 +42,7 @@ import Data.Hashable (hash)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T
+import Data.Unique (hashUnique, newUnique)
 import EphemeralPg.Config (Config (..))
 import EphemeralPg.Internal.CopyOnWrite
   ( CowCapability (..),
@@ -57,9 +58,11 @@ import System.Directory
     listDirectory,
     removeDirectoryRecursive,
     removeFile,
+    renamePath,
   )
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.Posix.Process (getProcessID)
 import System.Process.Typed (byteStringOutput, proc, readProcess, setStderr, setStdout)
 
 -- | A cache key uniquely identifies a cached initdb cluster.
@@ -170,16 +173,42 @@ isCached key mRoot = do
 
 -- | Create a cache from an initialized data directory.
 createCache :: CacheKey -> FilePath -> Maybe FilePath -> IO (Either Text ())
-createCache key srcDataDir mRoot = do
-  dir <- getCacheDirectory key mRoot
-  createDirectoryIfMissing True dir
+createCache key srcDataDir mRoot = runExceptT $ do
+  dir <- liftIO $ getCacheDirectory key mRoot
+  liftIO $ createDirectoryIfMissing True dir
   let dstDataDir = dir </> "data"
 
-  -- Detect CoW capability
-  cowCapability <- detectCowCapability dir
+  alreadyCached <- liftIO $ doesDirectoryExist dstDataDir
+  unless alreadyCached $ do
+    unique <- liftIO newUnique
+    pid <- liftIO getProcessID
+    let tmpDataDir =
+          dir </> ("data.tmp-" <> show pid <> "-" <> show (hashUnique unique))
 
-  -- Copy the data directory to the cache
-  copyDirectory cowCapability srcDataDir dstDataDir
+    cowCapability <- liftIO $ detectCowCapability dir
+    copyResult <- liftIO $ copyDirectory cowCapability srcDataDir tmpDataDir
+    case copyResult of
+      Left err -> do
+        liftIO $ removeDirectoryIfExists tmpDataDir
+        throwE err
+      Right () -> publishCache tmpDataDir dstDataDir
+  where
+    publishCache :: FilePath -> FilePath -> ExceptT Text IO ()
+    publishCache tmpDataDir dstDataDir = do
+      result <- liftIO $ try @SomeException $ renamePath tmpDataDir dstDataDir
+      case result of
+        Right () -> pure ()
+        Left ex -> do
+          winnerExists <- liftIO $ doesDirectoryExist dstDataDir
+          liftIO $ removeDirectoryIfExists tmpDataDir
+          unless winnerExists $
+            throwE $
+              "Failed to publish cache: " <> T.pack (show ex)
+
+    removeDirectoryIfExists :: FilePath -> IO ()
+    removeDirectoryIfExists path = do
+      exists <- doesDirectoryExist path
+      when exists $ removeDirectoryRecursive path
 
 -- | Restore from cache to a new data directory.
 restoreFromCache :: CacheKey -> FilePath -> Maybe FilePath -> IO (Either Text ())

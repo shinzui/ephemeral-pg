@@ -1,9 +1,20 @@
 module Main where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Monad (forM_, replicateM)
 import Data.Text qualified as T
 import EphemeralPg qualified as Pg
 import EphemeralPg.Config qualified as Config
+import EphemeralPg.Internal.Cache
+  ( CacheKey (..),
+    createCache,
+    getCacheDirectory,
+    restoreFromCache,
+  )
 import Hasql.Connection qualified as Connection
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 import Test.QuickCheck
 
@@ -74,6 +85,31 @@ main = hspec $ do
             Connection.release conn
             pure ()
       result2 `shouldSatisfy` isRight
+
+    it "publishes concurrently-created caches atomically" $ do
+      withSystemTempDirectory "ephemeral-pg-cache-race-" $ \root -> do
+        let key = CacheKey {pgVersion = "test", configHash = "atomic"}
+            sourceDir = root </> "source-data"
+            restoreDir = root </> "restore-data"
+
+        createDirectoryIfMissing True (sourceDir </> "base")
+        writeFile (sourceDir </> "PG_VERSION") "test\n"
+        writeFile (sourceDir </> "base" </> "marker") "ok\n"
+
+        done <- replicateM 8 newEmptyMVar
+        forM_ done $ \var ->
+          forkIO (createCache key sourceDir (Just root) >>= putMVar var)
+        results <- traverse takeMVar done
+        results `shouldSatisfy` all isRight
+
+        cacheDir <- getCacheDirectory key (Just root)
+        doesFileExist (cacheDir </> "data" </> "PG_VERSION") `shouldReturn` True
+        doesFileExist (cacheDir </> "data" </> "base" </> "marker") `shouldReturn` True
+        doesDirectoryExist (cacheDir </> "data" </> "source-data") `shouldReturn` False
+
+        restoreResult <- restoreFromCache key restoreDir (Just root)
+        restoreResult `shouldSatisfy` isRight
+        doesFileExist (restoreDir </> "PG_VERSION") `shouldReturn` True
 
   describe "Config" $ do
     it "satisfies left identity (mempty <> x = x)" $
