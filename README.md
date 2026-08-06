@@ -461,13 +461,17 @@ emits one span per public operation:
 | `dumpTraced`                 | `ephemeralpg.dump`              |
 | `restoreTraced`              | `ephemeralpg.restore`           |
 
-Each span carries the standard database attributes
-(`db.system.name`/`db.system`, `db.namespace`/`db.name`) plus
+Each span carries the standard database and server attributes
+(`db.system.name`/`db.system`, `db.namespace`/`db.name`,
+`server.address`/`net.peer.name`, `server.port`/`net.peer.port`) plus
 library-specific ones (`ephemeralpg.port`,
-`ephemeralpg.shutdown.mode`). Attribute name selection obeys
-`OTEL_SEMCONV_STABILITY_OPT_IN` exactly the way upstream HTTP
-instrumentation does — set it to `http` for stable names, `http/dup`
-for both stable and legacy. Errors from `EphemeralPg.start` are
+`ephemeralpg.shutdown.mode`). `server.address` is the Unix socket
+directory, which is what a client passes as libpq's `host`. Attribute
+name selection obeys
+`OTEL_SEMCONV_STABILITY_OPT_IN` exactly the way upstream database
+instrumentation does — set it to `database` for stable names,
+`database/dup` for both stable and legacy. Errors from
+`EphemeralPg.start` are
 recorded uniformly with `error.type` (constructor name), span status
 `Error`, and a `recordException` event.
 

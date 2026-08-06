@@ -11,6 +11,7 @@
 module Main (main) where
 
 import Control.Monad (void)
+import Data.IORef (readIORef)
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as L
 import OpenTelemetry.Context (empty)
@@ -40,7 +41,7 @@ import OpenTelemetry.Trace
     tracerProviderOptionsSampler,
   )
 import OpenTelemetry.Trace qualified as Trace
-import OpenTelemetry.Trace.Core (getSpanContext)
+import OpenTelemetry.Trace.Core (SpanHot (..), getSpanContext)
 import OpenTelemetry.Trace.Id (Base (..), spanIdBaseEncodedText, traceIdBaseEncodedText)
 import OpenTelemetry.Trace.Sampler (alwaysOn)
 import Test.Hspec
@@ -50,7 +51,7 @@ import UnliftIO (MonadUnliftIO, bracket)
 main :: IO ()
 main = do
   void $ attachContext empty
-  bracket initializeTracing shutdownTracerProvider $ \_ ->
+  bracket initializeTracing (\tp -> shutdownTracerProvider tp Nothing) $ \_ ->
     inSpan "Run tests" defaultSpanArguments runTests
 
 runTests :: IO ()
@@ -93,6 +94,9 @@ parentAwareFormatter sp = do
   let ctx = spanContext sp
       traceIdText = traceIdBaseEncodedText Base16 (traceId ctx)
       spanIdText = spanIdBaseEncodedText Base16 (spanId ctx)
+  -- Name and status are mutable span fields; since 1.0 they live behind
+  -- the 'spanHot' IORef rather than directly on 'ImmutableSpan'.
+  hot <- readIORef (spanHot sp)
   parentText <- renderParent (spanParent sp)
   pure $
     L.concat
@@ -103,9 +107,9 @@ parentAwareFormatter sp = do
         " parent=",
         L.fromStrict parentText,
         " status=",
-        L.fromStrict (renderStatus (spanStatus sp)),
+        L.fromStrict (renderStatus (hotStatus hot)),
         " name=",
-        L.fromStrict (spanName sp)
+        L.fromStrict (hotName hot)
       ]
 
 renderParent :: Maybe Span -> IO T.Text

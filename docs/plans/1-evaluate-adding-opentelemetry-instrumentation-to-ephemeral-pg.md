@@ -497,10 +497,13 @@ appended here when M2 completes, including the captured stderr excerpt.
      `ephemeralpg.cache.restore`, `ephemeralpg.postgres.start`,
      `ephemeralpg.postgres.wait_ready`, `ephemeralpg.createdb`, and
      `ephemeralpg.cache.{hit,cow_method}` attributes — own ExecPlan.
-  2. Replace `allow-newer` in `cabal.project` with proper version
+  2. ~~Replace `allow-newer` in `cabal.project` with proper version
      pinning once the upstream `hs-opentelemetry-*` Hackage releases
-     ship the `==0.3.*` API bound. Until then, builds depend on the
-     `allow-newer` waiver to resolve.
+     ship the `==0.3.*` API bound.~~ **Resolved.** The
+     `hs-opentelemetry-*` 1.0.0.0 releases all pin
+     `hs-opentelemetry-api ==1.0.*` on Hackage, so the waiver was
+     removed and the companion package now bounds
+     `hs-opentelemetry-api >=1.0 && <1.1`.
   3. Move the `LICENSE` symlink so the companion package's
      `license-file: ../LICENSE` stops emitting the
      `relative-path-outside` warning when packaging for sdist.

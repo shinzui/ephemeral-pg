@@ -26,12 +26,17 @@
 -- = Semantic conventions
 --
 -- Spans that have a 'Pg.Database' in scope receive standard database
--- attributes. The exact attribute names obey
+-- attributes. The exact attribute names obey the @database@ key of
 -- @OTEL_SEMCONV_STABILITY_OPT_IN@:
 --
--- * Stable (v1.27+): @db.system.name@, @db.namespace@.
--- * Legacy:          @db.system@, @db.name@.
--- * Both:             stable + legacy.
+-- * @database@     — stable (v1.27+): @db.system.name@,
+--                    @db.namespace@, @server.address@, @server.port@.
+-- * /unset/        — legacy: @db.system@, @db.name@, @net.peer.name@,
+--                    @net.peer.port@.
+-- * @database\/dup@ — both stable and legacy.
+--
+-- @server.address@ is the Unix socket directory, since that is what a
+-- client passes as libpq's @host@ to reach the instance.
 --
 -- Plus library-specific keys: @ephemeralpg.port@,
 -- @ephemeralpg.shutdown.mode@.
@@ -81,9 +86,9 @@ import EphemeralPg.Dump qualified as Dump
 import EphemeralPg.Snapshot qualified as Snapshot
 import OpenTelemetry.Attributes (Attribute, ToAttribute (..))
 import OpenTelemetry.SemanticsConfig
-  ( HttpOption (..),
+  ( StabilityOpt (..),
+    databaseOption,
     getSemanticsOptions,
-    httpOption,
   )
 import OpenTelemetry.Trace.Core
   ( Span,
@@ -338,8 +343,9 @@ tagCommon sp cfg = do
       addAttribute sp ("ephemeralpg.service_label" :: Text) (serviceLabel cfg)
 
 -- | Attach attributes derived from a 'Pg.Database': the
--- @db.system.name@/@db.namespace@ family (with stability honour) plus
--- @ephemeralpg.port@ and @ephemeralpg.shutdown.mode@.
+-- @db.system.name@/@db.namespace@ and @server.address@/@server.port@
+-- families (with stability honour) plus @ephemeralpg.port@ and
+-- @ephemeralpg.shutdown.mode@.
 attachDbAttributes :: Span -> Pg.Database -> IO ()
 attachDbAttributes sp db = do
   attrs <- dbAttributes db
@@ -347,18 +353,26 @@ attachDbAttributes sp db = do
 
 dbAttributes :: Pg.Database -> IO [(Text, Attribute)]
 dbAttributes db = do
-  opt <- httpOption <$> getSemanticsOptions
+  opt <- databaseOption <$> getSemanticsOptions
   let pgName = "postgresql" :: Text
       dbNamespace = db.databaseName
+      -- ephemeral-pg listens on a Unix socket, and the socket directory
+      -- is what a client hands libpq as @host@ — so it is the address
+      -- a connection to this instance actually uses.
+      serverAddress = T.pack db.socketDirectory
       port = fromIntegral db.port :: Int
       shutdownModeText = renderShutdownMode db.shutdownMode
       stable =
         [ ("db.system.name", toAttribute pgName),
-          ("db.namespace", toAttribute dbNamespace)
+          ("db.namespace", toAttribute dbNamespace),
+          ("server.address", toAttribute serverAddress),
+          ("server.port", toAttribute port)
         ]
       legacy =
         [ ("db.system", toAttribute pgName),
-          ("db.name", toAttribute dbNamespace)
+          ("db.name", toAttribute dbNamespace),
+          ("net.peer.name", toAttribute serverAddress),
+          ("net.peer.port", toAttribute port)
         ]
       ephemeralPg =
         [ ("ephemeralpg.port", toAttribute port),
