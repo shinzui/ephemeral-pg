@@ -536,6 +536,41 @@ parent PID 1. Untracked directories without PID files remain untouched. The
 private `.ephemeral-pg-instances-<uid>` registry retains small lock files to avoid
 concurrent lock-replacement races.
 
+## Running tests
+
+Run all suites locally with the pinned Nix toolchain:
+
+```bash
+nix develop .#test -c cabal test all --test-show-details=direct
+```
+
+On an Apple silicon Mac, run the Linux suites with Apple containers:
+
+```bash
+container system start
+./test/platform/apple-container.sh
+```
+
+The script requires `container`, `git`, `jq`, and `tar`. It uses a pinned official
+Nix image and the repository's `flake.lock`, with GHC 9.12.4 and PostgreSQL from
+the `test` shell. It copies tracked and non-ignored untracked files from the current
+working tree into the container's Linux filesystem, then runs every Cabal test
+suite as an unprivileged user. This includes real process ownership and orphan
+recovery tests. No Dockerfile or Docker daemon is needed.
+
+The dedicated `ephemeral-pg-nix-validation` container stops after each run, including
+failures, and retains Nix and Cabal caches for the next run. Failed source snapshots
+and Cabal logs remain inside it for inspection. The first run downloads the Linux
+toolchain and builds dependencies. Defaults are four CPUs and 4 GiB of memory;
+set `EPHEMERAL_PG_CPUS` and `EPHEMERAL_PG_MEMORY` when creating a container to
+change those limits. Set `EPHEMERAL_PG_CONTAINER` to use a separate named container;
+the script refuses to reuse a running container. Extra arguments are passed to
+`cabal test`, for example `--test-options='--match "Stale instances"'`.
+
+The `test` shell skips editor tools, Git hook installation and development-database
+initialization. Linux process inspection requires `procps` on `PATH`, supplied by
+this shell. Databases and build outputs stay inside the Linux container.
+
 ## License
 
 BSD-3-Clause

@@ -84,6 +84,10 @@ matchesServer uid record ident =
 systemInspector :: Inspector
 systemInspector = Inspector inspectProcess enumerateProcesses (signalProcess sigINT)
 
+-- Linux installations such as NixOS provide procps through PATH.
+psExecutable :: FilePath
+psExecutable = if os == "darwin" then "/bin/ps" else "ps"
+
 -- Only promote a platform after running the real orphan fixture there.
 enumerateProcesses :: IO (Either String [Identity])
 enumerateProcesses = observeProcesses Nothing
@@ -99,7 +103,7 @@ observeProcesses target
                 Nothing -> ["-ww", "-axo", fields]
                 Just pid -> ["-ww", "-p", show pid, "-o", fields]
               cp =
-                (proc "/bin/ps" selection)
+                (proc psExecutable selection)
                   { env = Just (("LC_ALL", "C") : ("TZ", "UTC") : filter (\(k, _) -> k /= "LC_ALL" && k /= "TZ") environment)
                   }
           (code, output, _) <- readCreateProcessWithExitCode cp ""
@@ -139,7 +143,7 @@ observeProcesses target
       | takeFileName ident.command `elem` ["postgres", "initdb"] = do
           (code, output, _) <-
             readCreateProcessWithExitCode
-              (proc "/bin/ps" ["-ww", "-p", show ident.pid, "-o", "args="])
+              (proc psExecutable ["-ww", "-p", show ident.pid, "-o", "args="])
               ""
           -- A disappearing entry invalidates this snapshot; the next sweep retries.
           if code == ExitSuccess && not (null output)

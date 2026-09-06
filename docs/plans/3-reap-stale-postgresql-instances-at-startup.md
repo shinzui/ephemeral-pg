@@ -28,13 +28,16 @@ The decisive demonstration is a subprocess test: start a database in a child con
 - [x] (2026-09-06 16:18Z) Startup integration, public documentation and ADR written. Main suite passed 38 examples on both macOS and Linux; all macOS OpenTelemetry suites and Haddock generation passed.
 - [x] (2026-09-06 16:28Z) Deterministic initdb, copy and createdb cancellation barriers pass. Final main library suite: 43 examples, zero failures on macOS and Linux. Both macOS OpenTelemetry suites pass (four examples and one example).
 - [x] (2026-09-06 16:31Z) Final build, regenerated API documentation, formatting and whitespace validation passed; verified both new public symbols in generated HTML and completed ADR distillation and plan closeout.
+- [x] (2026-09-06 16:45Z) Replaced Docker fixtures with Apple containers and the pinned Nix test shell. All 48 examples passed on ARM64 Linux and macOS. Validated launcher cache reuse, concurrent-run rejection, pinned-image bootstrap, and shutdown after success and deliberate Cabal failure.
 
 ## Surprises & Discoveries
 
 
 The baseline macOS suite passed with 11 examples and zero failures. The first orphan fixture exposed `/tmp` versus `/private/tmp` differences; startup and tests now canonicalize roots before allocating. Other local postmasters use relative paths or environment-based data paths, so command-line enumeration alone cannot exclude them. The adapter additionally observes each PostgreSQL process's working directory (batched `lsof` on macOS, `/proc/<pid>/cwd` on Linux). Disappearing shutdown workers require bounded re-observation rather than immediate success or deletion.
 
-Linux Docker supplies GHC 9.6.6 and PostgreSQL 17.11; the probe explicitly builds filelock 0.1.1.9 because Debian's packaged version is 0.1.1.7. Its real orphan test passed (one example, zero failures). macOS uses GHC 9.12.4 and PostgreSQL 17.10. The Linux main library suite subsequently passed 38 examples with zero failures in 43.592 seconds using the full Docker fixture. The macOS main suite passed the same 38 examples in 134.5203 seconds. The probe remains distinct from full-suite evidence. Final cancellation additions and their resulting cleanup changes still need final validation.
+The original Linux Docker fixture supplied GHC 9.6.6 and PostgreSQL 17.11; the probe explicitly built filelock 0.1.1.9 because Debian's packaged version is 0.1.1.7. Its real orphan test passed (one example, zero failures). macOS uses GHC 9.12.4 and PostgreSQL 17.10. The Linux main library suite subsequently passed 38 examples with zero failures in 43.592 seconds using the full Docker fixture. The macOS main suite passed the same 38 examples in 134.5203 seconds. The probe remains distinct from full-suite evidence. The final cancellation validation is recorded in Outcomes & Retrospective.
+
+The Nix bootstrap image has no `/bin/ps`. Linux inspection now resolves `ps` through `PATH`, with procps supplied by `devShells.test`. The shell uses the same GHC 9.12.4 and PostgreSQL 17.10 pins as local development, without editor tools, hook installation or development-database initialization.
 
 ## Decision Log
 
@@ -59,12 +62,16 @@ Decision (2026-09-06): normal cleanup rechecks that the data directory has no ac
 
 Decision (2026-09-06): inspect an individual target with `ps -p <pid>`, separately from full process enumeration before deletion. The combined macOS suites exposed an unrelated server exiting during the original all-process identity lookup. Target-specific inspection removes this spurious uncertainty while preserving the independent full enumeration required to exclude active data-directory users.
 
+Decision (2026-09-06): replace both Debian Dockerfiles and the standalone feasibility probe with `test/platform/apple-container.sh`. Apple containers supplies a local ARM64 Linux kernel; Nix supplies the locked project toolchain. Copy the current working tree into the Linux filesystem and run all Cabal suites as a non-root user. Retain the stopped container for Nix/Cabal caches. See [the Linux validation ADR](../adr/2-linux-tests-with-apple-containers-and-nix.md).
+
 ## Outcomes & Retrospective
 
 
 Implemented all three milestones: external lifetime ownership, conservative explicit reaping, and default-enabled startup integration. The public API exposes `sweepStaleInstances` and `sweepStaleOnStart`; cached fallback paths share one protected allocation. Real SIGKILL fixtures prove the postmaster survives its consumer, then explicit or automatic sweeping stops it and removes only its abandoned data. Live survivor connections and reusable cache contents remain usable.
 
 The final Linux main suite passed 43 examples with zero failures in 34.7830 seconds (GHC 9.6.6, PostgreSQL 17.11, filelock 0.1.1.9). The final combined macOS run passed the same 43 examples in 90.4557 seconds (GHC 9.12.4, PostgreSQL 17.10), plus the four-example OpenTelemetry suite and its one-example demo. `cabal build all` passed. `cabal haddock all`, `nix fmt` and `git diff --check` passed. Generated HTML contains both new public symbols; Haddock reports nonfatal link/coverage warnings.
+
+The Apple containers follow-up passed all three suites through `./test/platform/apple-container.sh` on ARM64 Linux: 43 main examples (34.0226 seconds), four OpenTelemetry examples (1.9962 seconds), and one demo example (0.4682 seconds), all with zero failures. GHC 9.12.4 and PostgreSQL 17.10 came from the unchanged `flake.lock`; procps was 4.0.6 and the bootstrap image used Nix 2.35.2. The macOS test shell also passed all 48 examples, with the main suite taking 113.5554 seconds. The launcher successfully reused dependency caches and stopped the container after both success and a deliberate invalid-Cabal-option failure. A concurrent invocation was rejected without interrupting the active run. A fresh pinned-image bootstrap also passed. Both Dockerfiles and the redundant standalone probe are removed.
 
 Durable decisions are distilled into [the ownership and reaping ADR](../adr/1-stale-instance-ownership-and-reaping.md). Important lessons were canonical path agreement, keeping control files outside replaceable data, separating target identity from global enumeration, and avoiding output-pipe cleanup blocking cancellation. Conservative limits remain intentional: unsupported/uncertain observations, legacy directories without PID files, active initialization children, and shutdown timeouts retain data. Persistent lock files prevent inode-recycling races. The existing snapshot API's process-handle redesign remains outside this plan; normal cleanup now refuses to remove its replacement server's live data.
 
@@ -83,7 +90,7 @@ Durable decisions are distilled into [the ownership and reaping ADR](../adr/1-st
 
 `src/EphemeralPg/Process/Postgres.hs` launches the postmaster, PostgreSQL's supervising process, in a new process group. Its `stopPostgres` requires a typed-process handle and waits on that child; a later sweeper does not have that handle and cannot reuse that waiting path. A PID is a numeric operating-system process identifier and can be reused after a process exits. Treat a PID as a lookup key, not proof of identity. Permission errors during a liveness probe mean unknown, not dead.
 
-`ephemeral-pg.cabal` declares the library and `ephemeral-pg-test`; the test component also compiles modules directly from `src`, so new internal modules and dependencies must be listed in both components. `test/Main.hs` uses Hspec, QuickCheck, and real PostgreSQL. `cabal.project` includes `ephemeral-pg-opentelemetry/`; run its tests too. `nix/haskell.nix` supplies a GHC 9.12.4 development shell with PostgreSQL. The shell initializes a repository-local `db` directory; do not sweep it. Supported target platforms for this plan are macOS and Linux on local filesystems.
+`ephemeral-pg.cabal` declares the library and `ephemeral-pg-test`; the test component also compiles modules directly from `src`, so new internal modules and dependencies must be listed in both components. `test/Main.hs` uses Hspec, QuickCheck, and real PostgreSQL. `cabal.project` includes `ephemeral-pg-opentelemetry/`; run its tests too. `nix/haskell.nix` supplies a GHC 9.12.4 development shell with PostgreSQL. The default shell initializes a repository-local `db` directory; do not sweep it. The `test` shell skips that initialization and supplies Linux procps explicitly. `test/platform/apple-container.sh` uses this shell inside Apple containers and runs every suite from a fresh source snapshot on the Linux filesystem. Supported target platforms for this plan are macOS and Linux on local filesystems.
 
 Initial ADR discovery found no `docs/adr/` directory and no relevant ADRs. Implementation has now created [the ownership and reaping ADR](../adr/1-stale-instance-ownership-and-reaping.md). `mori show --full` reports no OKF bundles, so there is no profiled ADR format to enforce. During implementation create an ordinary Markdown architectural record at `docs/adr/1-stale-instance-ownership-and-reaping.md`, after rechecking for newly added conventions, explaining ownership, legacy exclusions, and the shutdown-before-deletion rule.
 
@@ -185,7 +192,7 @@ nix fmt
 git diff --check
 ```
 
-Review formatter changes and retain only changes belonging to this work. All test suites must pass; documentation generation and whitespace validation must succeed. Repeat the focused suite on the second target operating system through an available checkout or CI runner and record OS, PostgreSQL version, compiler version, and results. If no second runner is available, explicitly record that remaining validation rather than inventing evidence.
+Review formatter changes and retain only changes belonging to this work. All test suites must pass; documentation generation and whitespace validation must succeed. On Apple silicon, run `./test/platform/apple-container.sh` to validate all suites on ARM64 Linux locally. Record OS, PostgreSQL version, compiler version and results. A separate Linux host can instead run `nix develop .#test -c cabal test all --test-show-details=direct`. If no Linux environment is available, explicitly record that remaining validation rather than inventing evidence.
 
 ## Validation and Acceptance
 
@@ -232,19 +239,27 @@ Revision (2026-09-06): recorded 38-example macOS/Linux suite evidence, enabled s
 Platform validation commands (repository root):
 
 ```bash
-docker build -f test/platform/Dockerfile -t ephemeral-pg-plan3-probe .
-docker run --rm ephemeral-pg-plan3-probe
-docker build -f test/platform/Dockerfile.full -t ephemeral-pg-plan3-full .
-docker run --rm ephemeral-pg-plan3-full
+nix develop .#test -c cabal test all --test-show-details=direct
+container system start
+./test/platform/apple-container.sh
 ```
 
-For an incremental run against changed source, bind the current `src` and `test`
-directories read-only onto `/project/src` and `/project/test`; Cabal build outputs
-remain inside the container. The final Linux run uses those mounts so its evidence
-belongs to the checked-in implementation, rather than an older image snapshot.
-The Linux image runs PostgreSQL as the `postgres` user and explicitly builds
-filelock 0.1.1.9. The full image runs the main library suite; OpenTelemetry suites
-are validated on macOS.
+The Apple container script requires `container`, `git`, `jq` and `tar` on an Apple
+silicon Mac. It uses the official Nix 2.35.2 image pinned by digest, transfers
+tracked and non-ignored untracked working-tree files into a fresh Linux directory,
+and realizes `path:$PWD#test` without rewriting `flake.lock`. The Nix setup runs as
+root, then all Cabal builds and tests run as user `test` (UID 1000). No host build
+outputs or database directories are shared. The main and both OpenTelemetry suites
+run on Linux. The former standalone probe's assertions live in `test/StaleInstances.hs`.
+
+The dedicated `ephemeral-pg-nix-validation` container stops on success or failure;
+Nix and Cabal caches survive for subsequent runs. The script refuses to reuse a
+running container. Failed source snapshots remain under `/work/source.*` inside
+that container and build logs under `/home/test/dist-newstyle`. Re-run the same
+command to retry. Use `EPHEMERAL_PG_CONTAINER` for a separate container. CPU and
+memory defaults are four CPUs and 4 GiB, overridable at creation through
+`EPHEMERAL_PG_CPUS` and `EPHEMERAL_PG_MEMORY`. Successful source snapshots are
+removed. See the Linux validation ADR for the durable workflow decision.
 
 Process observation uses the following argument vectors, without shell evaluation:
 
@@ -254,7 +269,7 @@ Process observation uses the following argument vectors, without shell evaluatio
 /usr/sbin/lsof -a -p PID_LIST -d cwd -Fn
 ```
 
-`ps` runs with `LC_ALL=C` and `TZ=UTC`. Linux reads the selected `/proc/PID/exe`,
+The shown absolute `ps` paths apply to macOS; Linux uses the same arguments with `ps` resolved through `PATH`. `ps` runs with `LC_ALL=C` and `TZ=UTC`. Linux reads the selected `/proc/PID/exe`,
 `cmdline`, and `cwd` entries. The successful Linux feasibility fixture observed a
 postmaster with PID 23, parent 1, effective UID 100, start epoch 1788710796, command
 `/usr/lib/postgresql/17/bin/postgres`, and data working directory
@@ -285,3 +300,25 @@ updated orientation to the implemented lifecycle, and distilled the final lesson
 and intentional exclusions into the outcome and architectural record.
 
 Revision (2026-09-06): completed final build/documentation/format verification and marked all milestones complete.
+
+Revision (2026-09-06): replaced Docker validation instructions with Apple containers and the shared Nix test shell, recorded the Linux `ps` path portability fix, and added the Linux validation ADR. All 48 examples subsequently passed on macOS and ARM64 Linux through the Nix test shell; the checked-in launcher passed end-to-end validation and stopped the container on success and failure.
+
+
+Apple containers migration evidence (2026-09-06):
+
+```text
+./test/platform/apple-container.sh
+  Linux aarch64; GHC 9.12.4; PostgreSQL 17.10; procps-ng 4.0.6
+  ephemeral-pg-test: 43 examples, 0 failures
+  ephemeral-pg-opentelemetry-test: 4 examples, 0 failures
+  ephemeral-pg-opentelemetry-demo: 1 example, 0 failures
+  exit 0; container state stopped
+nix develop .#test -c cabal test all --test-show-details=direct
+  macOS: 43 + 4 + 1 examples, 0 failures
+Concurrent launcher invocation: rejected, active run continued
+Deliberately invalid Cabal option: nonzero exit, container state stopped
+Fresh digest-pinned Nix image: Linux aarch64, Nix 2.35.2, test user UID 1000
+bash -n test/platform/apple-container.sh test/platform/run-tests.sh: passed
+nix fmt: passed
+git diff --check: passed
+```

@@ -76,4 +76,6 @@ kill only the consumer and verify the postmaster survives before reaping it.
 The main safety suite covers PID reuse, timeout, concurrent claims, replacement,
 malformed state, cancellation, cache fallbacks, live connections and legacy
 recovery. See [the implementation plan](../plans/3-reap-stale-postgresql-instances-at-startup.md)
-for final commands and results.
+for final commands and results. The current Linux workflow uses Apple containers
+and the pinned Nix test shell (GHC 9.12.4 / PostgreSQL 17.10), with all 43 main
+examples and both OpenTelemetry suites passing. See [the Linux validation ADR](2-linux-tests-with-apple-containers-and-nix.md).

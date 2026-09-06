@@ -18,16 +18,15 @@
   config.perSystem = { system, pkgs, config, ... }:
     let
       hsdev = inputs.haskell-nix-dev.lib.${system};
+      runtimePackages = [ pkgs.postgresql pkgs.xz ]
+        ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.procps pkgs.glibcLocales ]
+        ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.lsof ];
 
       mkProjectShell = ghc: hsdev.mkDevShell {
         inherit ghc;
         withHls = true;
         extraNativeBuildInputs =
-          [
-            pkgs.xz
-            pkgs.just
-            pkgs.postgresql
-          ]
+          runtimePackages ++ [ pkgs.just ]
           ++ config.haskellProject.extraDevPackages;
         shellHook = ''
           ${config.pre-commit.installationScript}
@@ -55,5 +54,11 @@
     {
       devShells.default = mkProjectShell "ghc9124";
       devShells.ghc9124 = mkProjectShell "ghc9124";
+      # Same pinned toolchain, without editor tools, Git hooks or a persistent DB.
+      devShells.test = hsdev.mkDevShell {
+        ghc = "ghc9124";
+        withHls = false;
+        extraNativeBuildInputs = runtimePackages;
+      };
     };
 }
