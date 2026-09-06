@@ -86,17 +86,24 @@ systemInspector = Inspector inspectProcess enumerateProcesses (signalProcess sig
 
 -- Only promote a platform after running the real orphan fixture there.
 enumerateProcesses :: IO (Either String [Identity])
-enumerateProcesses
+enumerateProcesses = observeProcesses Nothing
+
+observeProcesses :: Maybe ProcessID -> IO (Either String [Identity])
+observeProcesses target
   | os `notElem` ["darwin", "linux"] = pure $ Left "Process inspection has not been validated on this platform"
   | otherwise =
       ( do
           environment <- getEnvironment
-          let cp =
-                (proc "/bin/ps" ["-ww", "-axo", "pid=,ppid=,uid=,stat=,lstart=,comm="])
+          let fields = "pid=,ppid=,uid=,stat=,lstart=,comm="
+              selection = case target of
+                Nothing -> ["-ww", "-axo", fields]
+                Just pid -> ["-ww", "-p", show pid, "-o", fields]
+              cp =
+                (proc "/bin/ps" selection)
                   { env = Just (("LC_ALL", "C") : ("TZ", "UTC") : filter (\(k, _) -> k /= "LC_ALL" && k /= "TZ") environment)
                   }
           (code, output, _) <- readCreateProcessWithExitCode cp ""
-          if code /= ExitSuccess
+          if code /= ExitSuccess && not (target /= Nothing && null output)
             then pure (Left "ps enumeration failed")
             else case traverse parseIdentity (lines output) of
               Nothing -> pure $ Left "Unparseable process metadata"
@@ -167,7 +174,7 @@ inspectProcess :: ProcessID -> IO Observation
 inspectProcess pid
   | pid <= 1 = pure $ Unknown "Invalid PID"
   | otherwise = do
-      snapshot <- enumerateProcesses
+      snapshot <- observeProcesses (Just pid)
       case snapshot of
         Left reason -> pure $ Unknown reason
         Right entries -> case filter (\entry -> entry.pid == pid) entries of

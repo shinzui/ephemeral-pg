@@ -26,7 +26,8 @@ The decisive demonstration is a subprocess test: start a database in a child con
 - [x] (2026-09-06 16:07Z) Implemented internal explicit sweep; 10 focused macOS examples pass, covering orphan recovery, concurrency, malformed state, cancellation and replacement.
 - [x] (2026-09-06 16:13Z) Legacy, timeout, PID-reuse, opt-out, cache fallback and survivor-connection fixtures passed; enabled and exported automatic and explicit sweeping.
 - [x] (2026-09-06 16:18Z) Startup integration, public documentation and ADR written. Main suite passed 38 examples on both macOS and Linux; all macOS OpenTelemetry suites and Haddock generation passed.
-- [ ] Finish deterministic cancellation fixtures and rerun final checks after the resulting cleanup fix.
+- [x] (2026-09-06 16:28Z) Deterministic initdb, copy and createdb cancellation barriers pass. Final main library suite: 43 examples, zero failures on macOS and Linux. Both macOS OpenTelemetry suites pass (four examples and one example).
+- [x] (2026-09-06 16:31Z) Final build, regenerated API documentation, formatting and whitespace validation passed; verified both new public symbols in generated HTML and completed ADR distillation and plan closeout.
 
 ## Surprises & Discoveries
 
@@ -56,17 +57,23 @@ Decision (2026-09-06): subprocess command output is captured in temporary files 
 
 Decision (2026-09-06): normal cleanup rechecks that the data directory has no active PostgreSQL process. This prevents the pre-existing immutable snapshot/restart handle limitation from deleting a replacement server's live data. If observation remains uncertain, release the lease but retain metadata and data for a later dead-owner sweep.
 
+Decision (2026-09-06): inspect an individual target with `ps -p <pid>`, separately from full process enumeration before deletion. The combined macOS suites exposed an unrelated server exiting during the original all-process identity lookup. Target-specific inspection removes this spurious uncertainty while preserving the independent full enumeration required to exclude active data-directory users.
+
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+Implemented all three milestones: external lifetime ownership, conservative explicit reaping, and default-enabled startup integration. The public API exposes `sweepStaleInstances` and `sweepStaleOnStart`; cached fallback paths share one protected allocation. Real SIGKILL fixtures prove the postmaster survives its consumer, then explicit or automatic sweeping stops it and removes only its abandoned data. Live survivor connections and reusable cache contents remain usable.
+
+The final Linux main suite passed 43 examples with zero failures in 34.7830 seconds (GHC 9.6.6, PostgreSQL 17.11, filelock 0.1.1.9). The final combined macOS run passed the same 43 examples in 90.4557 seconds (GHC 9.12.4, PostgreSQL 17.10), plus the four-example OpenTelemetry suite and its one-example demo. `cabal build all` passed. `cabal haddock all`, `nix fmt` and `git diff --check` passed. Generated HTML contains both new public symbols; Haddock reports nonfatal link/coverage warnings.
+
+Durable decisions are distilled into [the ownership and reaping ADR](../adr/1-stale-instance-ownership-and-reaping.md). Important lessons were canonical path agreement, keeping control files outside replaceable data, separating target identity from global enumeration, and avoiding output-pipe cleanup blocking cancellation. Conservative limits remain intentional: unsupported/uncertain observations, legacy directories without PID files, active initialization children, and shutdown timeouts retain data. Persistent lock files prevent inode-recycling races. The existing snapshot API's process-handle redesign remains outside this plan; normal cleanup now refuses to remove its replacement server's live data.
 
 ## Context and Orientation
 
 
 `src/EphemeralPg.hs` implements the public lifecycle. `start` resolves temporary or permanent data and socket directories, runs `initdb`, starts PostgreSQL, creates the requested database, and returns a `Database`. `stop` calls `stopPostgres`, then the handle's cleanup action. `restart` preserves that cleanup action while replacing the process handle. The `with` family arranges cleanup when Haskell code can unwind, which cannot cover `SIGKILL`.
 
-Before this implementation, `startCached` had cache-disabled and cache-key-error fallbacks to `start`, a cache-hit path through `startFromCache`, and a cache-miss path through `startAndCache`; both successful cached paths reached `continueStartup`. The final implementation replaces these branches with `startManaged` and `initialize`, reusing one protected allocation through fallbacks. `startFromCache` allocates and then removes a temporary directory before copying a cache into it. Both cached paths currently allocate temporary data regardless of `Config.dataDirectory`; this existing behavior needs an explicit permanent-directory guard during integration so automatic cleanup never enrolls a user-owned directory accidentally. Route `DirectoryPermanent` cached requests through ordinary `start`, retaining the existing permanent-directory contract rather than redesigning caching for them.
+`start` and `startCached` now share `startManaged`, which performs one optional sweep and then allocates and owns resources. `initialize` handles cache-disabled and key-error fallbacks, cold cache creation, warm restore, and restore failure within that same allocation. A restore failure reinitializes the claimed path instead of calling public startup recursively. `DirectoryPermanent` cached requests use ordinary initialization, retaining the permanent-directory contract without enrolling user-owned data.
 
 `src/EphemeralPg/Internal/Directory.hs` uses `createTempDirectory` with the literal prefix `ephpg-data-`, not a hard-coded double-hyphen pattern. Scan immediate children whose names begin with that prefix, which also covers the `ephpg-data--*` examples in the issue. Socket directories use `pg-`; snapshots use `ephpg-snap-`. A temporary root comes from `getLast config.temporaryRoot`, otherwise `getTemporaryDirectory`.
 
@@ -118,7 +125,7 @@ Acceptance is focused tests proving one abandoned fixture is removed, its second
 
 Add the configuration field and its right-biased `Semigroup` combination in `src/EphemeralPg/Config.hs`; `mempty` carries `Last Nothing`, and `defaultConfig` enables the behavior. Refactor `src/EphemeralPg.hs` so public `start` and `startCached` perform at most one automatic sweep per invocation before allocating new resources. Internal fallbacks use an already-swept entry point, avoiding duplicate scans. Protect temporary instances with lifetime locks even when automatic sweeping is disabled, so another process can still clean them later.
 
-Thread ownership through `start`, `startAndCache`, `startFromCache`, and `continueStartup`. Audit every `Left` path and asynchronous exception between allocation and publishing the `Database`. Mask the transfer of lock ownership into the cleanup closure, restore interruptibility for blocking work, and ensure failure stops any launched process before releasing ownership and removing resources. The closure must release locks exactly once and preserve enough metadata for later cleanup if ordinary deletion fails. Do not hold the registry lock during ordinary server lifetime. Preserve the ownership lock through `restart` and snapshot operations without copying it into cache or snapshot contents. Skip ownership registration for permanent data directories.
+Thread ownership through the shared `startManaged` allocation and `initialize` cache branches used by both public startup variants. These replace the original `startAndCache`, `startFromCache`, and `continueStartup` duplication. Audit every `Left` path and asynchronous exception between allocation and publishing the `Database`. Mask the transfer of lock ownership into the cleanup closure, restore interruptibility for blocking work, and ensure failure stops any launched process before releasing ownership and removing resources. The closure must release locks exactly once and preserve enough metadata for later cleanup if ordinary deletion fails. Do not hold the registry lock during ordinary server lifetime. Preserve the ownership lock through `restart` and snapshot operations without copying it into cache or snapshot contents. Skip ownership registration for permanent data directories.
 
 Add a child-consumer mode to `test/Main.hs`, dispatched before Hspec. The test driver launches its own test executable with a dedicated argument and isolated short temporary root, then waits for a pipe readiness message containing the child's data path and postmaster PID. Kill only the child consumer with `SIGKILL`; do not kill its process group. Use bounded handshakes and polling rather than arbitrary sleeps. Keep a second consumer alive and assert that it can connect after explicit sweeping and after automatic startup. Ensure test finalizers clean up only processes and directories created by that test, including on failure. Add deterministic startup barriers in the internal test seam to exercise pre-initdb, cache-copy, restart and restore windows while another process sweeps.
 
@@ -214,10 +221,67 @@ sweepStaleOnStart :: Last Bool
 
 The internal ownership module should expose an opaque `InstanceLease`, acquisition for newly allocated temporary instances, and idempotent release/retirement operations. `Internal.ProcessIdentity` owns all OS-specific observations. `Internal.Sweep` owns candidate classification, bounded shutdown, deletion and reporting. Keep process inspection injectable for deterministic tests; do not expose a public function that signals arbitrary PIDs or deletes arbitrary paths.
 
-Use existing `directory`, `filepath`, `unix`, `process`, and `typed-process` dependencies for filesystem work, ownership checks, signals, and subprocesses after consulting Mori for their APIs. Add `filelock >=0.1.1.9 && <0.2` to the library and test component, subject to the repeated release check above. Hackage reported 0.1.1.9 during research and the current upstream tag `v0.1.1.9` resolved to commit `74e5cd6f8e3cf1ca72af118782f256887f5fd9ba`. The registry had no filelock source entry, so its released source was read directly from Hackage. This release uses `flock` and opens descriptors with close-on-exec on the repository's `unix >=2.8` range. Close-on-exec prevents the executed PostgreSQL program from retaining the consumer's lock. Still prove that behavior with the actual subprocess test.
+Use `time >=1.12 && <1.17` for normalized `ps` date parsing; Mori located `mori://haskell/time/packages/time`, and Hackage plus upstream tags confirmed release 1.16.0.1. Use existing `directory`, `filepath`, `unix`, `process`, and `typed-process` dependencies for filesystem work, ownership checks, signals, and subprocesses after consulting Mori for their APIs. Add `filelock >=0.1.1.9 && <0.2` to the library and test component, subject to the repeated release check above. Hackage reported 0.1.1.9 during research and the current upstream tag `v0.1.1.9` resolved to commit `74e5cd6f8e3cf1ca72af118782f256887f5fd9ba`. The registry had no filelock source entry, so its released source was read directly from Hackage. This release uses `flock` and opens descriptors with close-on-exec on the repository's `unix >=2.8` range. Close-on-exec prevents the executed PostgreSQL program from retaining the consumer's lock. Still prove that behavior with the actual subprocess test.
 
 Dependency ownership reference: `mori://haskell-pkg-janitors/filelock` (intended canonical project URI; no local registration found). Source artifact path: `System/FileLock/Internal/Flock.hsc`; artifact-level URI pending. The plan does not change existing dependency pins or bounds beyond the new locking dependency. No PostgreSQL extension, background daemon, consumer-installed signal handler, or OpenTelemetry API change is required.
 
 Revision (2026-09-06): recorded platform feasibility evidence, canonical-root handling, working-directory inspection, persistent lock inode policy, and startup consolidation.
 
 Revision (2026-09-06): recorded 38-example macOS/Linux suite evidence, enabled startup sweep after the destructive-operation gate, and documented the cancellation-driven output-capture and live-data cleanup changes.
+
+Platform validation commands (repository root):
+
+```bash
+docker build -f test/platform/Dockerfile -t ephemeral-pg-plan3-probe .
+docker run --rm ephemeral-pg-plan3-probe
+docker build -f test/platform/Dockerfile.full -t ephemeral-pg-plan3-full .
+docker run --rm ephemeral-pg-plan3-full
+```
+
+For an incremental run against changed source, bind the current `src` and `test`
+directories read-only onto `/project/src` and `/project/test`; Cabal build outputs
+remain inside the container. The final Linux run uses those mounts so its evidence
+belongs to the checked-in implementation, rather than an older image snapshot.
+The Linux image runs PostgreSQL as the `postgres` user and explicitly builds
+filelock 0.1.1.9. The full image runs the main library suite; OpenTelemetry suites
+are validated on macOS.
+
+Process observation uses the following argument vectors, without shell evaluation:
+
+```text
+/bin/ps -ww -p PID -o pid=,ppid=,uid=,stat=,lstart=,comm=
+/bin/ps -ww -axo pid=,ppid=,uid=,stat=,lstart=,comm=
+/usr/sbin/lsof -a -p PID_LIST -d cwd -Fn
+```
+
+`ps` runs with `LC_ALL=C` and `TZ=UTC`. Linux reads the selected `/proc/PID/exe`,
+`cmdline`, and `cwd` entries. The successful Linux feasibility fixture observed a
+postmaster with PID 23, parent 1, effective UID 100, start epoch 1788710796, command
+`/usr/lib/postgresql/17/bin/postgres`, and data working directory
+`/tmp/epg-67fbb65f997e520e/ephpg-data--7c9f9cb6f428e552`; it then received one fast
+shutdown and the directory was removed. macOS fixtures verify the same fields
+against each real PID file and assert live survivor connections.
+
+Revision (2026-09-06): documented reproducible Linux validation, target-specific
+process inspection, final shared startup structure, and the additional time dependency.
+
+Final test evidence:
+
+```text
+macOS: cabal test all --test-show-details=direct
+  ephemeral-pg-test: 43 examples, 0 failures (90.4557 seconds)
+  ephemeral-pg-opentelemetry-test: 4 examples, 0 failures
+  ephemeral-pg-opentelemetry-demo: 1 example, 0 failures
+Linux: main library suite in the full Docker fixture, current source mounted read-only
+  ephemeral-pg-test: 43 examples, 0 failures (34.7830 seconds)
+cabal build all: passed
+cabal haddock all: passed; both public symbols verified in generated HTML
+nix fmt: passed
+git diff --check: passed
+```
+
+Revision (2026-09-06): recorded final cross-platform recovery/cancellation results,
+updated orientation to the implemented lifecycle, and distilled the final lessons
+and intentional exclusions into the outcome and architectural record.
+
+Revision (2026-09-06): completed final build/documentation/format verification and marked all milestones complete.

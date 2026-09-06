@@ -28,7 +28,9 @@ the effective user and requires local filesystem locking semantics.
 A sweep claims an unlocked candidate without blocking, then requires a dead owner
 and verifiable process observations. It inspects only immediate `ephpg-data-`
 directories owned by the effective user and rejects symlinks and malformed control
-files. macOS inspection combines locale-normalized `ps` metadata with batched
+files. Target identity queries select one PID so unrelated process exits cannot invalidate
+that observation. A separate full enumeration excludes active directory users.
+macOS inspection combines locale-normalized `ps` metadata with batched
 `lsof` working directories. Linux combines `ps` with `/proc` executable, argument,
 and working-directory observations. An unsupported or failed observation is
 uncertain and cannot authorize deletion.
