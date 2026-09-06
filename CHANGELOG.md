@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+- Export `CacheKey (..)`, `getCacheKey`, `CowCapability (..)`, and
+  `CowMethod (..)` from `EphemeralPg`. `clearCache` takes a `CacheKey` and
+  `CacheConfig.cow` holds a `Maybe CowCapability`, but neither type was reachable
+  from any exposed module, so `clearCache` could not be called and `cow` could
+  not be set to anything but `Nothing`.
+
 ## 0.3.0.0
 
 ### Breaking Changes

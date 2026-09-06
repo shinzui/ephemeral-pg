@@ -59,7 +59,11 @@ module EphemeralPg
 
     -- * Cache Management
     CacheConfig (..),
+    CacheKey (..),
+    CowCapability (..),
+    CowMethod (..),
     defaultCacheConfig,
+    getCacheKey,
     clearCache,
     clearAllCaches,
 
@@ -103,6 +107,7 @@ import EphemeralPg.Error
   )
 import EphemeralPg.Internal.Cache
   ( CacheConfig (..),
+    CacheKey (..),
     cleanupRuntimeFiles,
     clearAllCaches,
     clearCache,
@@ -111,6 +116,10 @@ import EphemeralPg.Internal.Cache
     getCacheKey,
     isCached,
     restoreFromCache,
+  )
+import EphemeralPg.Internal.CopyOnWrite
+  ( CowCapability (..),
+    CowMethod (..),
   )
 import EphemeralPg.Internal.Directory
   ( createTempDataDirectory,
