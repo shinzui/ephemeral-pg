@@ -2,17 +2,32 @@
 
 ## Unreleased
 
+## 0.3.0.0
+
+### Breaking Changes
+
+- Add the `sweepStaleOnStart` field to `Config`. Exhaustive constructor uses of
+  `Config` must be updated.
+
+### New Features
+
 - Add `sweepStaleInstances` and default-enabled `sweepStaleOnStart` to reclaim
   abandoned temporary PostgreSQL clusters on later startup. Live consumers hold
   external lifetime locks across initialization, cache restore, and restart.
+
+### Bug Fixes
+
 - Verify process identity before bounded fast shutdown; preserve uncertain data,
   permanent directories, sockets, snapshots, and reusable caches.
+- Resolve Linux `ps` through `PATH` so process inspection works with Nix-provided
+  procps.
+
+### Other Changes
+
 - Consolidate cached startup fallbacks into one protected allocation and preserve
   asynchronous cancellation during cache and resource operations.
-- Adding the `Config` field requires updates to exhaustive constructor uses.
-- Resolve Linux `ps` through `PATH` so process inspection works with Nix-provided
-  procps. Validate Linux suites locally with Apple containers and the pinned Nix
-  test shell instead of Debian Dockerfiles.
+- Validate Linux suites locally with Apple containers and the pinned Nix test
+  shell instead of Debian Dockerfiles.
 
 ## 0.2.2.0
 
