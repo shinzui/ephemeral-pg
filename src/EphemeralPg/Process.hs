@@ -9,21 +9,23 @@ module EphemeralPg.Process
   )
 where
 
-import Control.Exception (SomeException, try)
-import Data.ByteString.Lazy qualified as LBS
+import Control.Exception (IOException, try)
+import Data.ByteString qualified as BS
 import Data.Function ((&))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T
 import System.Directory qualified as Dir
 import System.Exit (ExitCode (..))
+import System.IO (SeekMode (AbsoluteSeek), hFlush, hSeek)
+import System.IO.Temp (withSystemTempFile)
 import System.Posix.User (getEffectiveUserName)
 import System.Process.Typed
-  ( byteStringOutput,
-    proc,
-    readProcess,
+  ( proc,
+    runProcess,
     setStderr,
     setStdout,
+    useHandleOpen,
   )
 
 -- | Run a process and capture its output.
@@ -34,17 +36,23 @@ runProcessCapture ::
   [String] ->
   -- | (exit code, stdout, stderr)
   IO (ExitCode, Text, Text)
-runProcessCapture exe args = do
-  let config =
-        proc exe args
-          & setStdout byteStringOutput
-          & setStderr byteStringOutput
-  (exitCode, stdout, stderr) <- readProcess config
-  pure
-    ( exitCode,
-      T.decodeUtf8Lenient $ LBS.toStrict stdout,
-      T.decodeUtf8Lenient $ LBS.toStrict stderr
-    )
+runProcessCapture exe args =
+  withSystemTempFile "ephpg-stdout" $ \outPath out -> do
+    Dir.removeFile outPath
+    withSystemTempFile "ephpg-stderr" $ \errPath err -> do
+      Dir.removeFile errPath
+      -- Anonymous file-backed output avoids pipe-reader cleanup waiting for a
+      -- child that has not yet been terminated during asynchronous cancellation.
+      -- Unlink before launching so SIGKILL cannot leave output files behind.
+      let config = proc exe args & setStdout (useHandleOpen out) & setStderr (useHandleOpen err)
+      exitCode <- runProcess config
+      hFlush out
+      hFlush err
+      hSeek out AbsoluteSeek 0
+      hSeek err AbsoluteSeek 0
+      stdout <- BS.hGetContents out
+      stderr <- BS.hGetContents err
+      pure (exitCode, T.decodeUtf8Lenient stdout, T.decodeUtf8Lenient stderr)
 
 -- | Find an executable in PATH.
 findExecutable :: String -> IO (Maybe FilePath)
@@ -55,5 +63,5 @@ getCurrentUser :: IO Text
 getCurrentUser = do
   result <- try getEffectiveUserName
   case result of
-    Left (_ :: SomeException) -> pure "postgres"
+    Left (_ :: IOException) -> pure "postgres"
     Right name -> pure $ T.pack name

@@ -12,14 +12,22 @@ import EphemeralPg.Internal.Cache
     restoreFromCache,
   )
 import Hasql.Connection qualified as Connection
+import StaleInstances qualified
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
+import System.Environment (getArgs, setEnv)
 import System.FilePath ((</>))
-import System.IO.Temp (withSystemTempDirectory)
+import System.IO.Temp (withSystemTempDirectory, withTempDirectory)
 import Test.Hspec
 import Test.QuickCheck
 
 main :: IO ()
-main = hspec $ do
+main = do
+  handled <- getArgs >>= StaleInstances.childMode
+  if handled then pure () else withTempDirectory "/tmp" "epg-suite" $ \root -> setEnv "TMPDIR" root >> runTests
+
+runTests :: IO ()
+runTests = hspec $ do
+  StaleInstances.spec
   describe "EphemeralPg" $ do
     it "can start and stop a database" $ do
       result <- Pg.with $ \db -> do
@@ -56,6 +64,7 @@ main = hspec $ do
                 Connection.release conn
                 -- Port should be the same
                 db'.port `shouldBe` port1
+                Pg.stop db'
       result `shouldSatisfy` isRight
 
   describe "EphemeralPg caching" $ do

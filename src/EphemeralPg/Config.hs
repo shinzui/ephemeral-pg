@@ -73,6 +73,8 @@ data Config = Config
     socketDirectory :: DirectoryConfig,
     -- | Root directory for temporary files.
     temporaryRoot :: Last FilePath,
+    -- | Sweep abandoned temporary data at startup (absent means True).
+    sweepStaleOnStart :: Last Bool,
     -- | postgresql.conf settings.
     postgresSettings :: [(Text, Text)],
     -- | Additional arguments for initdb.
@@ -110,6 +112,7 @@ instance Semigroup Config where
         dataDirectory = combineDir a.dataDirectory b.dataDirectory,
         socketDirectory = combineDir a.socketDirectory b.socketDirectory,
         temporaryRoot = a.temporaryRoot <> b.temporaryRoot,
+        sweepStaleOnStart = a.sweepStaleOnStart <> b.sweepStaleOnStart,
         postgresSettings = a.postgresSettings <> b.postgresSettings,
         initDbArgs = a.initDbArgs <> b.initDbArgs,
         postgresArgs = a.postgresArgs <> b.postgresArgs,
@@ -139,6 +142,7 @@ instance Monoid Config where
         dataDirectory = DirectoryTemporary,
         socketDirectory = DirectoryTemporary,
         temporaryRoot = Last Nothing,
+        sweepStaleOnStart = Last Nothing,
         postgresSettings = [],
         initDbArgs = [],
         postgresArgs = [],
@@ -215,6 +219,7 @@ defaultConfig =
       dataDirectory = DirectoryTemporary,
       socketDirectory = DirectoryTemporary,
       temporaryRoot = Last Nothing,
+      sweepStaleOnStart = Last (Just True),
       postgresSettings = defaultPostgresSettings,
       initDbArgs = defaultInitDbArgs,
       postgresArgs = [],

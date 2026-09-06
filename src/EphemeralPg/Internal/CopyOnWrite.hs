@@ -19,7 +19,8 @@ module EphemeralPg.Internal.CopyOnWrite
   )
 where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (IOException, SomeException, fromException, try, tryJust)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Directory (removeFile)
@@ -27,7 +28,7 @@ import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
-import System.Process.Typed (nullStream, proc, runProcess, runProcess_, setStderr)
+import System.Process.Typed (ExitCodeException, nullStream, proc, runProcess, runProcess_, setStderr)
 
 -- | Copy-on-write capability for a filesystem.
 data CowCapability
@@ -72,7 +73,7 @@ detectCowCapability _testDir = do
   where
     catch_ :: IO a -> IO a -> IO a
     catch_ action fallback = do
-      result <- try @SomeException action
+      result <- try @IOException action
       case result of
         Left _ -> fallback
         Right a -> pure a
@@ -108,7 +109,7 @@ copyDirectory capability src dst = case capability of
 -- | Copy a directory using copy-on-write.
 copyDirectoryCoW :: CowMethod -> FilePath -> FilePath -> IO (Either Text ())
 copyDirectoryCoW method src dst = do
-  result <- try $ runCopy method
+  result <- tryCopy $ runCopy method
   case result of
     Left (_ :: SomeException) ->
       -- Fall back to regular copy on failure
@@ -128,9 +129,17 @@ copyDirectoryCoW method src dst = do
 -- | Copy a directory using regular (non-CoW) copy.
 copyDirectoryRegular :: FilePath -> FilePath -> IO (Either Text ())
 copyDirectoryRegular src dst = do
-  result <- try $ runProcess_ $ proc "cp" ["-R", src, dst]
+  result <- tryCopy $ runProcess_ $ proc "cp" ["-R", src, dst]
   case result of
     Left (ex :: SomeException) ->
       pure $ Left $ T.pack $ show ex
     Right () ->
       pure $ Right ()
+
+-- Only expected filesystem/process failures permit cache-copy fallback.
+-- Cancellation and other exceptions must unwind the protected startup.
+tryCopy :: IO a -> IO (Either SomeException a)
+tryCopy = tryJust $ \err ->
+  if isJust (fromException err :: Maybe IOException) || isJust (fromException err :: Maybe ExitCodeException)
+    then Just err
+    else Nothing

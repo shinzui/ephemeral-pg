@@ -16,7 +16,7 @@ module EphemeralPg.Internal.Directory
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, catch, try)
+import Control.Exception (IOException, catch, try)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
@@ -102,7 +102,7 @@ removeDirectoryIfExists :: FilePath -> IO ()
 removeDirectoryIfExists path = do
   exists <- doesDirectoryExist path
   when exists $
-    removeDirectoryRecursive path `catch` \(_ :: SomeException) -> pure ()
+    removeDirectoryRecursive path `catch` \(_ :: IOException) -> pure ()
 
 -- | Remove a directory with retries.
 --
@@ -115,7 +115,7 @@ retryRemoveDirectory path maxRetries delayMicros = go maxRetries
       result <- try $ removeDirectoryRecursive path
       case result of
         Right () -> pure $ Right ()
-        Left (e :: SomeException)
+        Left (e :: IOException)
           | n <= 0 ->
               pure $ Left $ "Failed after " <> T.pack (show maxRetries) <> " retries: " <> T.pack (show e)
           | otherwise -> do
@@ -127,6 +127,6 @@ tryDirCreate :: FilePath -> IO a -> ExceptT StartError IO a
 tryDirCreate dir action = do
   result <- liftIO $ try action
   case result of
-    Left (e :: SomeException) ->
+    Left (e :: IOException) ->
       throwE $ ResourceError $ DirectoryCreationFailed dir (T.pack $ show e)
     Right a -> pure a

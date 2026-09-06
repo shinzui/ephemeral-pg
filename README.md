@@ -500,6 +500,42 @@ build-depends:
 
 See `ephemeral-pg-opentelemetry/test/Demo.hs` for a runnable example.
 
+## Cleanup after a killed consumer
+
+`start` and `startCached` sweep abandoned temporary PostgreSQL instances before
+allocating a new cluster. If a consumer exits without cleanup (including SIGKILL),
+its server can remain alive until the next startup or explicit sweep:
+
+```haskell
+import Data.Monoid (Last (..))
+import EphemeralPg qualified as Pg
+
+let config = Pg.defaultConfig
+      { Pg.temporaryRoot = Last (Just "/tmp/my-tests") }
+removedPaths <- Pg.sweepStaleInstances config
+```
+
+Create a custom temporary root before using it. The sweep returns sorted canonical
+paths actually removed. Disable automatic sweeping with
+`config { Pg.sweepStaleOnStart = Last (Just False) }`; explicit sweeps still run,
+and new temporary instances still hold ownership locks. An absent setting enables
+automatic sweeping.
+
+Cleanup uses local filesystem locks to protect live consumers, including startup
+and data replacement. It waits up to five seconds per abandoned server for fast
+shutdown, without escalating to SIGKILL. Inspection and deletion add overhead, so
+a large backlog can delay startup. Uninspectable or unresponsive instances remain
+for a later attempt. Supported inspection platforms are Linux (`ps` and `/proc`)
+and macOS (`ps` and `lsof`).
+
+Only immediate temporary data directories are candidates. Permanent data, socket
+directories, snapshots, and initialization caches are excluded. Cached startup
+with permanent data uses ordinary initialization. Historical untracked clusters
+need a valid PID file; live historical servers also need verified identity and
+parent PID 1. Untracked directories without PID files remain untouched. The
+private `.ephemeral-pg-instances-<uid>` registry retains small lock files to avoid
+concurrent lock-replacement races.
+
 ## License
 
 BSD-3-Clause

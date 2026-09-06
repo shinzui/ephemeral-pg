@@ -21,12 +21,19 @@ The decisive demonstration is a subprocess test: start a database in a child con
 ## Progress
 
 
-<!-- Implementation has not begun. Add timestamped checklist entries when implementation starts; track all three milestones and split partial work into completed and remaining entries. -->
+- [x] (2026-09-06 15:51Z) Read plan and skill contracts; confirmed clean working tree, macOS toolchain, and filelock 0.1.1.9 release/source. Started baseline checks.
+- [x] (2026-09-06 16:07Z) Milestone 1 safety gate: same-process and subprocess lock exclusion, SIGKILL release, directory replacement, and real postmaster inspection passed on macOS; the Linux Docker probe passed with filelock 0.1.1.9.
+- [x] (2026-09-06 16:07Z) Implemented internal explicit sweep; 10 focused macOS examples pass, covering orphan recovery, concurrency, malformed state, cancellation and replacement.
+- [x] (2026-09-06 16:13Z) Legacy, timeout, PID-reuse, opt-out, cache fallback and survivor-connection fixtures passed; enabled and exported automatic and explicit sweeping.
+- [x] (2026-09-06 16:18Z) Startup integration, public documentation and ADR written. Main suite passed 38 examples on both macOS and Linux; all macOS OpenTelemetry suites and Haddock generation passed.
+- [ ] Finish deterministic cancellation fixtures and rerun final checks after the resulting cleanup fix.
 
 ## Surprises & Discoveries
 
 
-(None yet.)
+The baseline macOS suite passed with 11 examples and zero failures. The first orphan fixture exposed `/tmp` versus `/private/tmp` differences; startup and tests now canonicalize roots before allocating. Other local postmasters use relative paths or environment-based data paths, so command-line enumeration alone cannot exclude them. The adapter additionally observes each PostgreSQL process's working directory (batched `lsof` on macOS, `/proc/<pid>/cwd` on Linux). Disappearing shutdown workers require bounded re-observation rather than immediate success or deletion.
+
+Linux Docker supplies GHC 9.6.6 and PostgreSQL 17.11; the probe explicitly builds filelock 0.1.1.9 because Debian's packaged version is 0.1.1.7. Its real orphan test passed (one example, zero failures). macOS uses GHC 9.12.4 and PostgreSQL 17.10. The Linux main library suite subsequently passed 38 examples with zero failures in 43.592 seconds using the full Docker fixture. The macOS main suite passed the same 38 examples in 134.5203 seconds. The probe remains distinct from full-suite evidence. Final cancellation additions and their resulting cleanup changes still need final validation.
 
 ## Decision Log
 
@@ -41,6 +48,14 @@ Decision (2026-09-06): use bounded fast shutdown, never automatic `SIGKILL` esca
 
 Decision (2026-09-06): keep scope to a plan in this create-mode session. No intention was supplied during research. Implementation, tests, documentation updates, and architectural records described below remain future work.
 
+Decision (2026-09-06): persistent lifetime lock files are retained after retirement, while metadata is removed after successful cleanup. This avoids lock-inode recycling races; the cost is one small lock file per historical allocation. Registration and claims remain serialized by the persistent registry lock.
+
+Decision (2026-09-06): consolidate cached and uncached initialization into one managed allocation. Cache restore failure reinitializes that same protected directory, eliminating duplicate sweeps and unprotected fallback allocations. The destructive-operation gate subsequently passed and automatic sweeping is now enabled.
+
+Decision (2026-09-06): subprocess command output is captured in temporary files unlinked before launching, instead of pipes. Deterministic cancellation of initdb/createdb exposed pipe-reader cleanup waiting before child termination. Anonymous files retain lenient UTF-8 output capture, avoid that wait, and leave no output-file names after SIGKILL. Expected copy subprocess errors still permit fallback, but asynchronous exceptions propagate.
+
+Decision (2026-09-06): normal cleanup rechecks that the data directory has no active PostgreSQL process. This prevents the pre-existing immutable snapshot/restart handle limitation from deleting a replacement server's live data. If observation remains uncertain, release the lease but retain metadata and data for a later dead-owner sweep.
+
 ## Outcomes & Retrospective
 
 
@@ -51,7 +66,7 @@ Decision (2026-09-06): keep scope to a plan in this create-mode session. No inte
 
 `src/EphemeralPg.hs` implements the public lifecycle. `start` resolves temporary or permanent data and socket directories, runs `initdb`, starts PostgreSQL, creates the requested database, and returns a `Database`. `stop` calls `stopPostgres`, then the handle's cleanup action. `restart` preserves that cleanup action while replacing the process handle. The `with` family arranges cleanup when Haskell code can unwind, which cannot cover `SIGKILL`.
 
-`startCached` has cache-disabled and cache-key-error fallbacks to `start`, a cache-hit path through `startFromCache`, and a cache-miss path through `startAndCache`; both successful cached paths reach `continueStartup`. `startFromCache` allocates and then removes a temporary directory before copying a cache into it. Both cached paths currently allocate temporary data regardless of `Config.dataDirectory`; this existing behavior needs an explicit permanent-directory guard during integration so automatic cleanup never enrolls a user-owned directory accidentally. Route `DirectoryPermanent` cached requests through ordinary `start`, retaining the existing permanent-directory contract rather than redesigning caching for them.
+Before this implementation, `startCached` had cache-disabled and cache-key-error fallbacks to `start`, a cache-hit path through `startFromCache`, and a cache-miss path through `startAndCache`; both successful cached paths reached `continueStartup`. The final implementation replaces these branches with `startManaged` and `initialize`, reusing one protected allocation through fallbacks. `startFromCache` allocates and then removes a temporary directory before copying a cache into it. Both cached paths currently allocate temporary data regardless of `Config.dataDirectory`; this existing behavior needs an explicit permanent-directory guard during integration so automatic cleanup never enrolls a user-owned directory accidentally. Route `DirectoryPermanent` cached requests through ordinary `start`, retaining the existing permanent-directory contract rather than redesigning caching for them.
 
 `src/EphemeralPg/Internal/Directory.hs` uses `createTempDirectory` with the literal prefix `ephpg-data-`, not a hard-coded double-hyphen pattern. Scan immediate children whose names begin with that prefix, which also covers the `ephpg-data--*` examples in the issue. Socket directories use `pg-`; snapshots use `ephpg-snap-`. A temporary root comes from `getLast config.temporaryRoot`, otherwise `getTemporaryDirectory`.
 
@@ -63,7 +78,7 @@ Decision (2026-09-06): keep scope to a plan in this create-mode session. No inte
 
 `ephemeral-pg.cabal` declares the library and `ephemeral-pg-test`; the test component also compiles modules directly from `src`, so new internal modules and dependencies must be listed in both components. `test/Main.hs` uses Hspec, QuickCheck, and real PostgreSQL. `cabal.project` includes `ephemeral-pg-opentelemetry/`; run its tests too. `nix/haskell.nix` supplies a GHC 9.12.4 development shell with PostgreSQL. The shell initializes a repository-local `db` directory; do not sweep it. Supported target platforms for this plan are macOS and Linux on local filesystems.
 
-ADR discovery found no `docs/adr/` directory and no relevant ADRs. `mori show --full` reports no OKF bundles, so there is no profiled ADR format to enforce. During implementation create an ordinary Markdown architectural record at `docs/adr/1-stale-instance-ownership-and-reaping.md`, after rechecking for newly added conventions, explaining ownership, legacy exclusions, and the shutdown-before-deletion rule.
+Initial ADR discovery found no `docs/adr/` directory and no relevant ADRs. Implementation has now created [the ownership and reaping ADR](../adr/1-stale-instance-ownership-and-reaping.md). `mori show --full` reports no OKF bundles, so there is no profiled ADR format to enforce. During implementation create an ordinary Markdown architectural record at `docs/adr/1-stale-instance-ownership-and-reaping.md`, after rechecking for newly added conventions, explaining ownership, legacy exclusions, and the shutdown-before-deletion rule.
 
 ## Plan of Work
 
@@ -202,3 +217,7 @@ The internal ownership module should expose an opaque `InstanceLease`, acquisiti
 Use existing `directory`, `filepath`, `unix`, `process`, and `typed-process` dependencies for filesystem work, ownership checks, signals, and subprocesses after consulting Mori for their APIs. Add `filelock >=0.1.1.9 && <0.2` to the library and test component, subject to the repeated release check above. Hackage reported 0.1.1.9 during research and the current upstream tag `v0.1.1.9` resolved to commit `74e5cd6f8e3cf1ca72af118782f256887f5fd9ba`. The registry had no filelock source entry, so its released source was read directly from Hackage. This release uses `flock` and opens descriptors with close-on-exec on the repository's `unix >=2.8` range. Close-on-exec prevents the executed PostgreSQL program from retaining the consumer's lock. Still prove that behavior with the actual subprocess test.
 
 Dependency ownership reference: `mori://haskell-pkg-janitors/filelock` (intended canonical project URI; no local registration found). Source artifact path: `System/FileLock/Internal/Flock.hsc`; artifact-level URI pending. The plan does not change existing dependency pins or bounds beyond the new locking dependency. No PostgreSQL extension, background daemon, consumer-installed signal handler, or OpenTelemetry API change is required.
+
+Revision (2026-09-06): recorded platform feasibility evidence, canonical-root handling, working-directory inspection, persistent lock inode policy, and startup consolidation.
+
+Revision (2026-09-06): recorded 38-example macOS/Linux suite evidence, enabled startup sweep after the destructive-operation gate, and documented the cancellation-driven output-capture and live-data cleanup changes.

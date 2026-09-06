@@ -45,6 +45,7 @@ module EphemeralPg
     withCached,
     start,
     startCached,
+    sweepStaleInstances,
     stop,
     restart,
 
@@ -70,11 +71,14 @@ module EphemeralPg
   )
 where
 
-import Control.Exception (mask, onException)
-import Control.Monad (when)
+import Control.Concurrent (threadDelay)
+import Control.Exception (IOException, finally, mask, onException, try)
+import Control.Monad (unless, when)
 import Control.Monad.IO.Class (liftIO)
+import Data.IORef
 import Data.Monoid (Last (..))
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Word (Word16)
 import EphemeralPg.Config
   ( Config (..),
@@ -91,14 +95,14 @@ import EphemeralPg.Database
     connectionString,
   )
 import EphemeralPg.Error
-  ( StartError (..),
+  ( ResourceError (..),
+    StartError (..),
     StopError (..),
     renderStartError,
     renderStopError,
   )
 import EphemeralPg.Internal.Cache
   ( CacheConfig (..),
-    CacheKey,
     cleanupRuntimeFiles,
     clearAllCaches,
     clearCache,
@@ -115,12 +119,16 @@ import EphemeralPg.Internal.Directory
     resolveDirectory,
     retryRemoveDirectory,
   )
-import EphemeralPg.Internal.Except (liftE, onError, runStartup)
+import EphemeralPg.Internal.Except (liftE, runStartup)
+import EphemeralPg.Internal.Instance (registerInstance, releaseInstance, safeDirectory)
 import EphemeralPg.Internal.Port (findFreePort)
+import EphemeralPg.Internal.ProcessIdentity (systemInspector)
+import EphemeralPg.Internal.Sweep qualified as Sweep
 import EphemeralPg.Process (getCurrentUser)
 import EphemeralPg.Process.CreateDb (runCreateDb)
 import EphemeralPg.Process.InitDb (runInitDb, writePostgresConf)
 import EphemeralPg.Process.Postgres (startPostgres, stopPostgres)
+import System.Directory qualified as D
 
 -- | Create a temporary database with default configuration, run an action, then clean up.
 --
@@ -164,84 +172,124 @@ withConfig config action = mask $ \restore -> runStartup $ do
 --   Left err -> handleError err
 -- @
 start :: Config -> IO (Either StartError Database)
-start config = runStartup $ do
-  let mTempRoot = getLast config.temporaryRoot
+start config = startManaged config Nothing
 
-  -- Create data directory
-  (dataDir, dataDirIsTemp) <-
-    liftE $
-      resolveDirectory
-        config.dataDirectory
-        mTempRoot
-        "data"
-        createTempDataDirectory
+-- | Stop provably abandoned PostgreSQL servers and return the canonical paths
+-- of temporary data directories removed, in sorted order. Uses 'temporaryRoot'
+-- (or the system temporary directory), independently of 'sweepStaleOnStart'.
+-- Live ownership locks, permanent data, sockets, snapshots and caches are
+-- excluded. Fast shutdown waits up to five seconds per server; uncertain or
+-- unresponsive instances are retained. Cleanup after SIGKILL is delayed until
+-- the next sweep. Requires local filesystem locks and inspectable processes.
+sweepStaleInstances :: Config -> IO [FilePath]
+sweepStaleInstances = Sweep.sweepStaleInstances
 
-  -- Create socket directory
-  (socketDir, socketDirIsTemp) <-
-    liftE
-      ( resolveDirectory
-          config.socketDirectory
-          mTempRoot
-          "socket"
-          createTempSocketDirectory
-      )
-      `onError` when dataDirIsTemp (removeDirectoryIfExists dataDir)
+-- Allocation, startup and cleanup share one ownership transfer. A cache fallback
+-- reuses the protected allocation, so it cannot introduce a second sweep.
+startManaged :: Config -> Maybe CacheConfig -> IO (Either StartError Database)
+startManaged config cache = mask $ \restore -> do
+  when (maybe True id $ getLast config.sweepStaleOnStart) $
+    restore (sweepStaleInstances config) >> pure ()
+  resources <- newIORef (pure ())
+  let clean = readIORef resources >>= id
+  result <-
+    ( runStartup $ do
+        root <- liftIO $ maybe D.getTemporaryDirectory pure (getLast config.temporaryRoot) >>= D.canonicalizePath
+        (dataDir, isTemp, release) <- liftE $ case config.dataDirectory of
+          DirectoryPermanent _ ->
+            fmap (fmap (\(path, temp) -> (path, temp, pure ()))) $
+              resolveDirectory config.dataDirectory (Just root) "data" createTempDataDirectory
+          DirectoryTemporary -> do
+            acquired <- try @IOException $ registerInstance root
+            pure $ case acquired of
+              Left err -> Left $ ResourceError $ DirectoryCreationFailed root (T.pack $ show err)
+              Right (path, lease) -> Right (path, True, releaseInstance lease)
+        cleaned <- liftIO $ newIORef False
+        let cleanData = do
+              already <- atomicModifyIORef' cleaned (\old -> (True, old))
+              unless already $
+                ( do
+                    _ <- try @IOException $ when isTemp $ do
+                      -- Snapshot operations can replace the process behind the
+                      -- exported immutable handle. Never delete an active cluster.
+                      let awaitUnused attempts = do
+                            unused <- Sweep.directoryUnused systemInspector dataDir
+                            if unused || attempts == (0 :: Int)
+                              then pure unused
+                              else threadDelay 50000 >> awaitUnused (attempts - 1)
+                      unused <- awaitUnused 3
+                      when unused $ do
+                        _ <- safeDirectory dataDir
+                        canonical <- D.canonicalizePath dataDir
+                        when (canonical == dataDir) $ do
+                          _ <- retryRemoveDirectory dataDir 5 100000
+                          pure ()
+                    pure ()
+                )
+                  `finally` release
+        liftIO $ writeIORef resources cleanData
+        (socketDir, socketIsTemp) <-
+          liftE $
+            resolveDirectory config.socketDirectory (Just root) "socket" createTempSocketDirectory
+        let cleanDirs = cleanData `finally` when socketIsTemp (removeDirectoryIfExists socketDir)
+        liftIO $ writeIORef resources cleanDirs
+        p <- liftE $ restore $ getPort config
+        username <- liftIO $ restore $ getUsername config
+        liftE $ restore $ initialize config cache dataDir isTemp
+        -- startPostgres masks creation and cleans up cancellation during readiness.
+        pgProcess <- liftE $ startPostgres config dataDir socketDir p username
+        let abort = do
+              outcome <- stopPostgres pgProcess ShutdownImmediate 5
+              case outcome of
+                Nothing -> cleanDirs
+                Just _ -> release -- Keep uncertain data for a later sweep.
+        liftIO $ writeIORef resources abort
+        liftE $ restore $ runCreateDb config socketDir p username config.databaseName
+        pure
+          Database
+            { dataDirectory = dataDir,
+              socketDirectory = socketDir,
+              port = p,
+              databaseName = config.databaseName,
+              user = username,
+              password = config.password,
+              process = pgProcess,
+              cleanup = cleanDirs,
+              dataDirIsTemp = isTemp,
+              socketDirIsTemp = socketIsTemp,
+              shutdownMode = resolveShutdownMode config,
+              shutdownTimeoutSeconds = resolveShutdownTimeout config
+            }
+    )
+      `onException` clean
+  case result of
+    Left _ -> clean >> pure result
+    Right _ -> pure result
 
-  -- Get port
-  p <-
-    liftE (getPort config)
-      `onError` cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
-
-  -- Get username
-  username <- liftIO $ getUsername config
-
-  -- Run initdb
-  () <-
-    liftE (runInitDb config dataDir)
-      `onError` cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
-
-  -- Start postgres
-  pgProcess <-
-    liftE (startPostgres config dataDir socketDir p username)
-      `onError` cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
-
-  -- Create database
-  let dbName = config.databaseName
-  () <-
-    liftE (runCreateDb config socketDir p username dbName)
-      `onError` do
-        _ <- stopPostgres pgProcess ShutdownImmediate 5
-        cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir
-
-  -- Build cleanup action
-  let cleanupAction = do
-        when dataDirIsTemp $ do
-          -- Use retry to handle pg_stat race
-          _ <- retryRemoveDirectory dataDir 5 100000
-          pure ()
-        when socketDirIsTemp $
-          removeDirectoryIfExists socketDir
-
-  pure $
-    Database
-      { dataDirectory = dataDir,
-        socketDirectory = socketDir,
-        port = p,
-        databaseName = dbName,
-        user = username,
-        password = config.password,
-        process = pgProcess,
-        cleanup = cleanupAction,
-        dataDirIsTemp = dataDirIsTemp,
-        socketDirIsTemp = socketDirIsTemp,
-        shutdownMode = resolveShutdownMode config,
-        shutdownTimeoutSeconds = resolveShutdownTimeout config
-      }
-  where
-    cleanup :: Bool -> FilePath -> Bool -> FilePath -> IO ()
-    cleanup dataDirIsTemp dataDir socketDirIsTemp socketDir = do
-      when dataDirIsTemp $ removeDirectoryIfExists dataDir
-      when socketDirIsTemp $ removeDirectoryIfExists socketDir
+initialize :: Config -> Maybe CacheConfig -> FilePath -> Bool -> IO (Either StartError ())
+initialize config cache dataDir isTemp = case cache of
+  Just cacheConfig | cacheConfig.enabled && isTemp -> do
+    keyResult <- getCacheKey config
+    case keyResult of
+      Left _ -> runInitDb config dataDir
+      Right key -> do
+        cached <- isCached key cacheConfig.root
+        if cached
+          then do
+            D.removeDirectory dataDir
+            restored <- restoreFromCache key dataDir cacheConfig.root
+            case restored of
+              Right () -> cleanupRuntimeFiles dataDir >> writePostgresConf config dataDir >> pure (Right ())
+              Left _ -> do
+                removeDirectoryIfExists dataDir
+                D.createDirectory dataDir
+                runInitDb config dataDir
+          else do
+            initialized <- runInitDb config dataDir
+            case initialized of
+              Left err -> pure $ Left err
+              Right () -> createCache key dataDir cacheConfig.root >> pure (Right ())
+  _ -> runInitDb config dataDir
 
 -- | Get port from config or find a free one.
 getPort :: Config -> IO (Either StartError Word16)
@@ -274,10 +322,10 @@ resolveShutdownTimeout config =
 stop :: Database -> IO ()
 stop db = do
   -- Stop postgres using configured shutdown mode and timeout
-  _ <- stopPostgres db.process db.shutdownMode db.shutdownTimeoutSeconds
-
-  -- Run cleanup (removes temp directories)
-  db.cleanup
+  outcome <- stopPostgres db.process db.shutdownMode db.shutdownTimeoutSeconds
+  case outcome of
+    Nothing -> db.cleanup
+    Just _ -> pure () -- Preserve ownership and data when shutdown is uncertain.
 
 -- | Restart a database.
 --
@@ -340,136 +388,7 @@ withCachedConfig config cacheConfig action = mask $ \restore -> runStartup $ do
     stop db
     pure a
 
--- | Start a temporary database using initdb caching.
---
--- If caching is enabled and a cache exists, the data directory is copied
--- from the cache. Otherwise, initdb is run and the result is cached.
+-- | Start with a reusable initialization cache. Permanent data directories use
+-- ordinary initialization and are never registered for stale cleanup.
 startCached :: Config -> CacheConfig -> IO (Either StartError Database)
-startCached config cacheConfig
-  | not cacheConfig.enabled = start config
-  | otherwise = do
-      -- Get cache key
-      keyResult <- getCacheKey config
-      case keyResult of
-        Left _err ->
-          -- Can't determine cache key, fall back to non-cached start
-          start config
-        Right cacheKey -> do
-          -- Check if cache exists
-          cached <- isCached cacheKey cacheConfig.root
-          if cached
-            then startFromCache config cacheConfig cacheKey
-            else startAndCache config cacheConfig cacheKey
-
--- | Start from an existing cache.
-startFromCache :: Config -> CacheConfig -> CacheKey -> IO (Either StartError Database)
-startFromCache config cacheConfig cacheKey = runStartup $ do
-  let mTempRoot = getLast config.temporaryRoot
-
-  -- Create temporary data directory (to get the path)
-  (dataDir, dataDirIsTemp) <- liftE $ createTempDataDirectory mTempRoot
-
-  -- Remove the directory so cp can create it fresh
-  -- (otherwise cp -cR creates nested directories on macOS)
-  liftIO $ removeDirectoryIfExists dataDir
-
-  -- Restore from cache
-  restoreResult <- liftIO $ restoreFromCache cacheKey dataDir cacheConfig.root
-  case restoreResult of
-    Left _err -> do
-      -- Cache restore failed, fall back to non-cached start
-      liftIO $ removeDirectoryIfExists dataDir
-      liftE $ start config
-    Right () -> do
-      liftIO $ do
-        cleanupRuntimeFiles dataDir
-        writePostgresConf config dataDir
-      liftE $ continueStartup config dataDir dataDirIsTemp
-
--- | Start normally and cache the result.
--- Cache is created after initdb but before postgres starts.
-startAndCache :: Config -> CacheConfig -> CacheKey -> IO (Either StartError Database)
-startAndCache config cacheConfig cacheKey = runStartup $ do
-  let mTempRoot = getLast config.temporaryRoot
-
-  -- Create data directory
-  (dataDir, dataDirIsTemp) <- liftE $ createTempDataDirectory mTempRoot
-
-  -- Run initdb
-  liftE (runInitDb config dataDir)
-    `onError` when dataDirIsTemp (removeDirectoryIfExists dataDir)
-
-  -- Cache the data directory NOW (before postgres starts)
-  -- This ensures the cache contains only clean initdb output
-  liftIO $ when dataDirIsTemp $ do
-    _ <- createCache cacheKey dataDir cacheConfig.root
-    pure ()
-
-  -- Continue with normal startup from the initialized data directory
-  liftE $ continueStartup config dataDir dataDirIsTemp
-
--- | Continue startup from an existing data directory.
-continueStartup :: Config -> FilePath -> Bool -> IO (Either StartError Database)
-continueStartup config dataDir dataDirIsTemp = runStartup $ do
-  let mTempRoot = getLast config.temporaryRoot
-
-  -- Create socket directory
-  (socketDir, socketDirIsTemp) <-
-    liftE
-      ( resolveDirectory
-          config.socketDirectory
-          mTempRoot
-          "socket"
-          createTempSocketDirectory
-      )
-      `onError` when dataDirIsTemp (removeDirectoryIfExists dataDir)
-
-  -- Get port
-  p <-
-    liftE (getPort config)
-      `onError` cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
-
-  -- Get username
-  username <- liftIO $ getUsername config
-
-  -- Start postgres (initdb already done)
-  pgProcess <-
-    liftE (startPostgres config dataDir socketDir p username)
-      `onError` cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
-
-  -- Create database
-  let dbName = config.databaseName
-  () <-
-    liftE (runCreateDb config socketDir p username dbName)
-      `onError` do
-        _ <- stopPostgres pgProcess ShutdownImmediate 5
-        cleanupDirs dataDirIsTemp dataDir socketDirIsTemp socketDir
-
-  -- Build cleanup action
-  let cleanupAction = do
-        when dataDirIsTemp $ do
-          _ <- retryRemoveDirectory dataDir 5 100000
-          pure ()
-        when socketDirIsTemp $
-          removeDirectoryIfExists socketDir
-
-  pure $
-    Database
-      { dataDirectory = dataDir,
-        socketDirectory = socketDir,
-        port = p,
-        databaseName = dbName,
-        user = username,
-        password = config.password,
-        process = pgProcess,
-        cleanup = cleanupAction,
-        dataDirIsTemp = dataDirIsTemp,
-        socketDirIsTemp = socketDirIsTemp,
-        shutdownMode = resolveShutdownMode config,
-        shutdownTimeoutSeconds = resolveShutdownTimeout config
-      }
-  where
-    cleanupDirs :: Bool -> FilePath -> Bool -> FilePath -> IO ()
-    cleanupDirs dataDirIsTemp' dataDir' socketDirIsTemp' socketDir' = do
-      when dataDirIsTemp' $ removeDirectoryIfExists dataDir'
-      when socketDirIsTemp' $ removeDirectoryIfExists socketDir'
+startCached config cacheConfig = startManaged config (Just cacheConfig)

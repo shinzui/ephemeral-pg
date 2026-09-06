@@ -11,7 +11,7 @@ module EphemeralPg.Process.Postgres
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, mask_, try)
+import Control.Exception (IOException, mask, mask_, onException, try)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (throwE)
 import Data.Function ((&))
@@ -38,7 +38,8 @@ import System.Posix.Signals (sigINT, sigKILL, sigQUIT, sigTERM, signalProcess)
 import System.Posix.Types (CPid (..))
 import System.Process (getPid)
 import System.Process.Typed
-  ( nullStream,
+  ( getExitCode,
+    nullStream,
     proc,
     runProcess,
     setCreateGroup,
@@ -63,7 +64,7 @@ startPostgres ::
   -- | Username
   Text ->
   IO (Either StartError PostgresProcess)
-startPostgres config dataDir socketDir port username = runStartup $ do
+startPostgres config dataDir socketDir port username = mask $ \restore -> runStartup $ do
   -- Find postgres executable
   postgresPath <-
     liftMaybe (PostgresStartError PostgresNotFound)
@@ -81,7 +82,7 @@ startPostgres config dataDir socketDir port username = runStartup $ do
   -- Start the process
   typedProcess <-
     liftIO (try $ startProcess processConfig) >>= \case
-      Left (ex :: SomeException) ->
+      Left (ex :: IOException) ->
         throwE $
           PostgresStartError $
             PostgresStartFailed
@@ -117,7 +118,7 @@ startPostgres config dataDir socketDir port username = runStartup $ do
         maybe defaultConnectionTimeoutSeconds id $
           getLast config.connectionTimeoutSeconds
 
-  liftE (waitForPostgres socketDir port timeoutSecs)
+  liftE (restore (waitForPostgres socketDir port timeoutSecs) `onException` stopPostgres pgProcess ShutdownImmediate 5)
     `onError` do
       -- Kill the server since it didn't start properly
       _ <- stopPostgres pgProcess ShutdownImmediate 5
@@ -175,7 +176,7 @@ waitForPostgres socketDir port timeoutSecs = do
                   "1" -- 1 second timeout per attempt
                 ]
           result <-
-            try @SomeException $
+            try @IOException $
               runProcess $
                 proc pgIsReadyPath args
                   & setStdout nullStream
@@ -188,7 +189,14 @@ waitForPostgres socketDir port timeoutSecs = do
 
 -- | Stop the PostgreSQL server.
 stopPostgres :: PostgresProcess -> ShutdownMode -> Int -> IO (Maybe StopError)
-stopPostgres PostgresProcess {..} mode timeoutSecs = mask_ $ do
+stopPostgres pg@PostgresProcess {..} mode timeoutSecs = mask_ $ do
+  exited <- getExitCode process
+  case exited of
+    Just _ -> pure Nothing
+    Nothing -> stopRunning pg mode timeoutSecs
+
+stopRunning :: PostgresProcess -> ShutdownMode -> Int -> IO (Maybe StopError)
+stopRunning PostgresProcess {..} mode timeoutSecs = do
   let signal = case mode of
         ShutdownGraceful -> sigTERM
         ShutdownFast -> sigINT
@@ -197,9 +205,11 @@ stopPostgres PostgresProcess {..} mode timeoutSecs = mask_ $ do
   -- Send the signal
   result <- try $ signalProcess signal pid
   case result of
-    Left (_ :: SomeException) ->
-      -- Process might already be dead
-      pure Nothing
+    Left (err :: IOException) -> do
+      exited <- getExitCode process
+      pure $ case exited of
+        Just _ -> Nothing
+        Nothing -> Just $ ShutdownSignalFailed (fromIntegral pid) (T.pack $ show err)
     Right () -> do
       -- Wait for the process to exit with timeout
       let deadline = timeoutSecs * 1000000
@@ -209,7 +219,7 @@ stopPostgres PostgresProcess {..} mode timeoutSecs = mask_ $ do
         Just _ -> pure Nothing -- Exited normally
         Nothing -> do
           -- Timeout: force kill
-          _ <- try @SomeException $ signalProcess sigKILL pid
+          _ <- try @IOException $ signalProcess sigKILL pid
           -- Wait a bit more for the forced kill
           _ <- timeout 5000000 $ waitExitCode process
           pure $ Just $ ShutdownTimedOut timeoutSecs

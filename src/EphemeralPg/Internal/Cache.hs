@@ -32,7 +32,7 @@ module EphemeralPg.Internal.Cache
   )
 where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (IOException, try)
 import Control.Monad (unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
@@ -115,7 +115,7 @@ getPostgresVersion :: IO (Either Text Text)
 getPostgresVersion = do
   result <- try $ readProcess config
   pure $ case result of
-    Left (ex :: SomeException) ->
+    Left (ex :: IOException) ->
       Left $ "Failed to get postgres version: " <> T.pack (show ex)
     Right (ExitSuccess, stdout, _stderr) ->
       Right $ extractMajorVersion $ T.decodeUtf8Lenient $ LBS.toStrict stdout
@@ -195,7 +195,7 @@ createCache key srcDataDir mRoot = runExceptT $ do
   where
     publishCache :: FilePath -> FilePath -> ExceptT Text IO ()
     publishCache tmpDataDir dstDataDir = do
-      result <- liftIO $ try @SomeException $ renamePath tmpDataDir dstDataDir
+      result <- liftIO $ try @IOException $ renamePath tmpDataDir dstDataDir
       case result of
         Right () -> pure ()
         Left ex -> do
@@ -244,7 +244,7 @@ tryE :: Text -> IO a -> ExceptT Text IO a
 tryE prefix action = do
   result <- liftIO $ try action
   case result of
-    Left (ex :: SomeException) ->
+    Left (ex :: IOException) ->
       throwE $ prefix <> ": " <> T.pack (show ex)
     Right a -> pure a
 
@@ -272,7 +272,7 @@ cleanupRuntimeFiles dataDir = do
 
     catch_ :: IO a -> IO a -> IO a
     catch_ action fallback = do
-      result <- try @SomeException action
+      result <- try @IOException action
       case result of
         Left _ -> fallback
         Right a -> pure a
