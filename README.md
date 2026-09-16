@@ -516,7 +516,17 @@ removedPaths <- Pg.sweepStaleInstances config
 ```
 
 Create a custom temporary root before using it. The sweep returns sorted canonical
-paths actually removed. Disable automatic sweeping with
+paths actually removed.
+
+The sweep only inspects its own temporary root. With `temporaryRoot` unset that
+root is `$TMPDIR`, which `nix develop`, `nix-shell`, systemd `PrivateTmp` and some
+CI runners make unique per session — each run then sweeps a fresh empty directory
+and never reclaims what earlier runs abandoned. Set a stable `temporaryRoot` and
+use `withCachedConfig` or `withConfig` (the zero-argument `withCached` and `with`
+always resolve to `$TMPDIR`). See
+[Temporary roots and stale cleanup](docs/temporary-roots-and-stale-cleanup.md).
+
+Disable automatic sweeping with
 `config { Pg.sweepStaleOnStart = Last (Just False) }`; explicit sweeps still run,
 and new temporary instances still hold ownership locks. An absent setting enables
 automatic sweeping.

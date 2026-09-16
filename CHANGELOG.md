@@ -9,6 +9,17 @@
   `CacheConfig.cow` holds a `Maybe CowCapability`, but neither type was reachable
   from any exposed module, so `clearCache` could not be called and `cow` could
   not be set to anything but `Nothing`.
+- Export `withCachedConfig` from `EphemeralPg`. It was the only bracketing entry
+  point that accepts both a `Config` and a `CacheConfig`, so cached callers had no
+  way to set `temporaryRoot` without reimplementing `startCached`/`stop` bracketing.
+
+### Documentation
+
+- Document that the startup sweep is scoped to a single temporary root, and that
+  an unset `temporaryRoot` resolves to `$TMPDIR`. Environments that allocate a
+  per-session `$TMPDIR` (`nix develop`, `nix-shell`, systemd `PrivateTmp`, some CI
+  runners) sweep a fresh empty directory on every run and never reclaim clusters
+  abandoned by earlier sessions. See `docs/temporary-roots-and-stale-cleanup.md`.
 
 ## 0.3.0.0
 

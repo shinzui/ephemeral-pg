@@ -43,6 +43,7 @@ module EphemeralPg
     with,
     withConfig,
     withCached,
+    withCachedConfig,
     start,
     startCached,
     sweepStaleInstances,
@@ -389,6 +390,18 @@ withCached :: (Database -> IO a) -> IO (Either StartError a)
 withCached = withCachedConfig defaultConfig defaultCacheConfig
 
 -- | Like 'withCached' but with custom configuration.
+--
+-- Set 'temporaryRoot' here when the caller runs under a per-session @TMPDIR@
+-- (@nix develop@, @nix-shell@, systemd @PrivateTmp@, some CI runners). The
+-- startup sweep only inspects its own temporary root, so a per-session root
+-- hides clusters abandoned by earlier sessions. See
+-- @docs/temporary-roots-and-stale-cleanup.md@.
+--
+-- @
+-- let config = 'defaultConfig' { temporaryRoot = Last (Just "/tmp/my-tests") }
+-- result <- 'withCachedConfig' config 'defaultCacheConfig' $ \\db -> do
+--   -- Use the database...
+-- @
 withCachedConfig :: Config -> CacheConfig -> (Database -> IO a) -> IO (Either StartError a)
 withCachedConfig config cacheConfig action = mask $ \restore -> runStartup $ do
   db <- liftE $ startCached config cacheConfig
