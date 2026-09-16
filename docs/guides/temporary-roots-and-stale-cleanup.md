@@ -61,16 +61,19 @@ postmaster. They survived only because no later session ever searched those root
 ## Set a stable root
 
 Point `temporaryRoot` at a path that does not change between runs, and create it
-before use:
+before use. Key it by effective uid so that each user owns the root they write to
+— see [Choosing the path](#choosing-the-path) for why:
 
 ```haskell
 import Data.Monoid (Last (..))
 import EphemeralPg qualified as Pg
 import System.Directory (createDirectoryIfMissing)
+import System.Posix.User (getEffectiveUserID)
 
 testConfig :: IO Pg.Config
 testConfig = do
-  let root = "/tmp/ephpg-my-project"
+  uid <- getEffectiveUserID
+  let root = "/tmp/ephpg-my-project-" <> show uid
   createDirectoryIfMissing True root
   pure Pg.defaultConfig { Pg.temporaryRoot = Last (Just root) }
 ```
@@ -92,11 +95,46 @@ Reach for `withCachedConfig` or `withConfig` as soon as you need a stable root.
 - **Keep it short.** The socket directory lives under the same root, and
   `validateSocketPath` rejects anything that would push the Unix socket path past
   the platform limit. A deep root fails at startup rather than silently.
-- **Keep it per-user on shared machines.** The instance registry is already
-  namespaced as `.ephemeral-pg-instances-<uid>`, but the root directory itself is
-  not. Include the user name if several accounts share the host.
+- **Key it by user.** The instance registry is namespaced as
+  `.ephemeral-pg-instances-<uid>`, but the root directory holding it is not. A
+  fixed path is created `0700` by whoever gets there first, and every other user
+  is then locked out of it. See [When another user gets there first](#when-another-user-gets-there-first).
 - **Do not point it at a permanent data directory.** Permanent data, sockets,
   snapshots and caches are excluded from sweeping by design.
+
+### When another user gets there first
+
+A stable root has to be stable *per user*, not merely constant. The usual way to
+discover this is not a shared workstation but a build sandbox, which runs the
+same suite as a different uid:
+
+```text
+Failed to start temp database: ResourceError
+  (DirectoryCreationFailed "/private/tmp/ephpg-my-project"
+    "/private/tmp/ephpg-my-project/.ephemeral-pg-instances-361:
+     createDirectory: permission denied (Permission denied)")
+```
+
+A developer ran the suite first and owns `/tmp/ephpg-my-project` with mode `0700`.
+The Nix build sandbox then runs as uid 361, cannot enter it, and the suite fails
+at startup — on a machine where it passes interactively, which makes it look like
+a sandbox problem rather than a path problem.
+
+Put the uid in the path so each user gets a root they own:
+
+```haskell
+import System.Posix.User (getEffectiveUserID)
+
+ephemeralRoot :: IO FilePath
+ephemeralRoot = do
+  uid <- getEffectiveUserID
+  pure ("/tmp/ephpg-my-project-" <> show uid)
+```
+
+The uid keeps the root stable across that user's sessions, which is all the sweep
+requires, while keeping users out of each other's directories. Prefer it to
+`$USER`, which several sandbox users can share, and to `$HOME`, which a build
+sandbox may point at an unwritable path.
 
 ## Sharing one root across suites
 

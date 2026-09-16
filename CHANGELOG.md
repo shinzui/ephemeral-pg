@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Documentation
+
+- Explain in the temporary-root guide that a stable root must be stable *per
+  user*. A fixed path is created `0700` by whoever runs first, so a build sandbox
+  running as another uid fails at startup with `DirectoryCreationFailed` on a
+  machine where the suite passes interactively. Examples now key the root by
+  effective uid.
+
 ## 0.3.1.0
 
 ### Bug Fixes
