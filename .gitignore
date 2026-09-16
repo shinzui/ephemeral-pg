@@ -13,3 +13,6 @@ cabal.project.local
 db/
 .agents/
 CLAUDE.local.md
+.envrc.local
+result
+result-*
