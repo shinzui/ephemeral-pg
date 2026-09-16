@@ -1,3 +1,14 @@
+---
+type: Guide
+title: Migrating from tmp-postgres to ephemeral-pg
+description: Port a test suite from tmp-postgres to ephemeral-pg across connections, configuration, caching, snapshots, and error handling.
+docId: DOC-2
+tags: [ephemeral-pg, tmp-postgres, migration, testing, hasql]
+generated:
+  by: human:nadeem
+  at: 2026-02-27T20:01:24Z
+---
+
 # Migrating from tmp-postgres to ephemeral-pg
 
 This guide covers migrating from [tmp-postgres](https://hackage.haskell.org/package/tmp-postgres) to ephemeral-pg.

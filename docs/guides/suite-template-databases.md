@@ -1,3 +1,14 @@
+---
+type: Guide
+title: Suite-level template databases
+description: Start one cached PostgreSQL server per suite and clone a migrated template database per example for fast, isolated fixtures.
+docId: DOC-3
+tags: [ephemeral-pg, postgresql, testing, fixtures, migrations, performance]
+generated:
+  by: human:nadeem
+  at: 2026-05-23T20:13:39Z
+---
+
 # Suite-level template databases
 
 This guide describes a high-throughput fixture pattern for integration suites

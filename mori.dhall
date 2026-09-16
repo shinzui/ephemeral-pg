@@ -1,6 +1,6 @@
 let Schema =
-      https://raw.githubusercontent.com/shinzui/mori-schema/a3c59033a08c2eaef2cfba4a3c99fc9c192ca6d7/package.dhall
-        sha256:18258ef583580a897f4af3e7c86db0342afb42fb40efc535b217ba1089230141
+      https://raw.githubusercontent.com/shinzui/mori-schema/3522f4a51181d73c9c90fc27a7c0838bd29ae95f/package.dhall
+        sha256:dcb19e2312e790bad14e622cc98a1281cd2298c5b564a2f0d0534d3c718d8803
 
 let scoped =
       \(name : Text) ->
@@ -131,7 +131,36 @@ in  Schema.Project::{ project =
         , kind = Schema.DocKind.Guide
         , audience = Schema.DocAudience.User
         , description = Some "Migration guide from tmp-postgres"
-        , location = Schema.DocLocation.LocalDir "docs"
+        , location = Schema.DocLocation.LocalFile
+            "docs/guides/migrating-from-tmp-postgres.md"
+        }
+      , Schema.DocRef::{ key = "guides"
+        , kind = Schema.DocKind.Guide
+        , audience = Schema.DocAudience.User
+        , description = Some
+            "Reader-facing guides governed by the shared user-documentation profile"
+        , location = Schema.DocLocation.LocalDir "docs/guides"
+        }
+      ]
+    , okfBundles =
+      [ Schema.OkfBundle::{ name = "guides"
+        , path = "docs/guides"
+        , profile = Some "mori/user-documentation-profile.dhall"
+        , profileBinding = Some
+            ( Schema.ProfileBinding.Published
+                Schema.PinnedImport::{ publisher = "shinzui/okf-profiles"
+                , publisherRef = Some Schema.MoriRef::{ namespace = "shinzui"
+                  , name = "okf-profiles"
+                  }
+                , export = Some "documentation.userDocumentation"
+                , version = Some "v0.15.0"
+                , pin = Some
+                    "sha256:e1e7eaac9d08fd3409fe0d19057dba5634a4186733ccbf28323e9aa2a2512dc0"
+                }
+            )
+        , okfVersion = "0.2"
+        , description = Some
+            "Task-oriented migration and fixture guides plus the temporary-root explanation"
         }
       ]
     }

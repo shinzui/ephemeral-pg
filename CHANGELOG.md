@@ -21,8 +21,8 @@
   an unset `temporaryRoot` resolves to `$TMPDIR`. Environments that allocate a
   per-session `$TMPDIR` (`nix develop`, `nix-shell`, systemd `PrivateTmp`, some CI
   runners) sweep a fresh empty directory on every run and never reclaim clusters
-  abandoned by earlier sessions. See `docs/temporary-roots-and-stale-cleanup.md`.
-- Ship `docs/temporary-roots-and-stale-cleanup.md` in the source distribution via
+  abandoned by earlier sessions. See `docs/guides/temporary-roots-and-stale-cleanup.md`.
+- Ship `docs/guides/temporary-roots-and-stale-cleanup.md` in the source distribution via
   `extra-doc-files`, and correct the `withCachedConfig` haddock example.
 
 ## 0.3.0.0

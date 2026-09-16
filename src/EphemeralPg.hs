@@ -395,7 +395,7 @@ withCached = withCachedConfig defaultConfig defaultCacheConfig
 -- (@nix develop@, @nix-shell@, systemd @PrivateTmp@, some CI runners). The
 -- startup sweep only inspects its own temporary root, so a per-session root
 -- hides clusters abandoned by earlier sessions. See
--- @docs/temporary-roots-and-stale-cleanup.md@.
+-- @docs/guides/temporary-roots-and-stale-cleanup.md@.
 --
 -- @
 -- let config = 'defaultConfig' { temporaryRoot = Last (Just root) }

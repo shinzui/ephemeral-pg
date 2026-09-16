@@ -9,6 +9,14 @@ build:
 test:
   cabal test
 
+# The bundle follows the shared documentation.userDocumentation profile pinned
+# in mori/user-documentation-profile.dhall; validation is strict and enforces
+# both the profile and the bundle log.
+# Validate the reader-facing docs/guides OKF bundle
+user-documentation-validate:
+  okf validate docs/guides --strict --profile mori/user-documentation-profile.dhall --profile-enforce --log-enforce
+  okf graph docs/guides
+
 # Generate haddock documentation
 haddock:
   cabal haddock --haddock-hyperlink-source --haddock-quickjump
@@ -46,4 +54,4 @@ upload-docs:
   cabal upload --publish --documentation "$(cabal haddock --haddock-for-hackage 2>&1 | tail -1)"
 
 # Full release workflow: check, test, publish package + docs
-release: sdist-check test publish upload-docs
+release: sdist-check test user-documentation-validate publish upload-docs

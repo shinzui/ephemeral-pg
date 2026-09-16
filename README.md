@@ -165,7 +165,7 @@ schema, consider starting one cached PostgreSQL server for the whole suite,
 migrating a template database once, and cloning clean per-example databases
 with PostgreSQL's `CREATE DATABASE ... TEMPLATE ...`.
 
-See [Suite-level template databases](docs/suite-template-databases.md) for the
+See [Suite-level template databases](docs/guides/suite-template-databases.md) for the
 full pattern, tradeoffs, and a complete fixture implementation.
 
 ### Manual Lifecycle Management
@@ -524,7 +524,7 @@ CI runners make unique per session — each run then sweeps a fresh empty direct
 and never reclaims what earlier runs abandoned. Set a stable `temporaryRoot` and
 use `withCachedConfig` or `withConfig` (the zero-argument `withCached` and `with`
 always resolve to `$TMPDIR`). See
-[Temporary roots and stale cleanup](docs/temporary-roots-and-stale-cleanup.md).
+[Temporary roots and stale cleanup](docs/guides/temporary-roots-and-stale-cleanup.md).
 
 Disable automatic sweeping with
 `config { Pg.sweepStaleOnStart = Last (Just False) }`; explicit sweeps still run,

@@ -1,3 +1,14 @@
+---
+type: Explanation
+title: Temporary roots and stale cleanup
+description: Why stale-instance sweeping is scoped to a single temporary root, and how an unstable $TMPDIR silently leaks abandoned clusters.
+docId: DOC-4
+tags: [ephemeral-pg, cleanup, temporary-root, tmpdir, operations]
+generated:
+  by: human:nadeem
+  at: 2026-09-16T14:52:42Z
+---
+
 # Temporary roots and stale cleanup
 
 `start` and `startCached` sweep abandoned PostgreSQL clusters before allocating a
@@ -122,6 +133,6 @@ when automatic sweeping is disabled.
 
 ## Related
 
-- [ADR 1: Stale instance ownership and reaping](adr/1-stale-instance-ownership-and-reaping.md)
+- [ADR 1: Stale instance ownership and reaping](../adr/1-stale-instance-ownership-and-reaping.md)
   — the ownership, identity and signalling protocol.
 - `README.md`, "Cleanup after a killed consumer" — the short version.
