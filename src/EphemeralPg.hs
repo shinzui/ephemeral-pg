@@ -398,8 +398,8 @@ withCached = withCachedConfig defaultConfig defaultCacheConfig
 -- @docs/temporary-roots-and-stale-cleanup.md@.
 --
 -- @
--- let config = 'defaultConfig' { temporaryRoot = Last (Just "/tmp/my-tests") }
--- result <- 'withCachedConfig' config 'defaultCacheConfig' $ \\db -> do
+-- let config = 'defaultConfig' { temporaryRoot = Last (Just root) }
+-- 'withCachedConfig' config 'defaultCacheConfig' $ \\db -> do
 --   -- Use the database...
 -- @
 withCachedConfig :: Config -> CacheConfig -> (Database -> IO a) -> IO (Either StartError a)

@@ -15,6 +15,7 @@ build-type: Simple
 extra-doc-files:
   CHANGELOG.md
   README.md
+  docs/temporary-roots-and-stale-cleanup.md
 
 source-repository head
   type: git
