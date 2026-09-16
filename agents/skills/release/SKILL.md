@@ -8,7 +8,8 @@ allowed-tools: Read, Bash, Edit, Glob, Grep, Write
 
 # Release Skill
 
-Release a new version of the `ephemeral-pg` package to Hackage.
+Release a new version of the `ephemeral-pg` package to Hackage and publish the
+corresponding GitHub release.
 
 ## Scope
 
@@ -125,9 +126,53 @@ fails on authentication, report it rather than retrying.
 
 Report the Hackage URL (`https://hackage.haskell.org/package/ephemeral-pg-<version>`) when done.
 
+### 7. Create the GitHub release
+
+Do this after the Hackage upload succeeds, so the release notes only ever point at a
+package that actually shipped. Releases live at
+`https://github.com/shinzui/ephemeral-pg/releases`.
+
+- The tag must already be on the remote — step 5 pushed it. Confirm with
+  `git ls-remote --tags origin 'v<new-version>'` before creating the release; `gh` will
+  otherwise create a tag of its own from the default branch, which can point at the wrong
+  commit.
+- Build the notes from the `CHANGELOG.md` section for this version. Use the section body
+  verbatim (the `### Breaking Changes` / `### New Features` / `### Bug Fixes` /
+  `### Other Changes` subsections, without the `## <version>` heading itself), then append
+  a Hackage link footer:
+
+  ```
+  ---
+
+  Hackage: https://hackage.haskell.org/package/ephemeral-pg-<version>
+  ```
+
+  Write the notes to a file in the scratchpad directory and pass `--notes-file`. Do not
+  pass multi-line notes inline with `--notes`, and do not use `--generate-notes` — the
+  curated changelog is the source of truth, not the commit log.
+- Create it:
+
+  ```
+  gh release create v<new-version> \
+    --title "v<new-version>" \
+    --notes-file <scratchpad>/release-notes-<new-version>.md \
+    --verify-tag --latest
+  ```
+
+- `--verify-tag` makes `gh` fail rather than invent a tag. `--latest` is explicit because
+  GitHub does not always infer it correctly for four-component PVP versions.
+- Verify with `gh release list` and report the release URL alongside the Hackage URL.
+
+This step needs `gh` authenticated (`gh auth status`). If it is not, report that and leave
+the release uncreated — the Hackage publish has already succeeded and is not blocked by it.
+
 ## Important
 
 - Always ask the user to confirm the version bump and changelog before committing, and
   confirm again before publishing.
 - Never skip `cabal check` or the test suite, and always run them before tagging.
 - If any step fails, stop and report the error rather than continuing.
+- A hook in this repository has been observed rewriting the commit message and returning a
+  non-zero exit status while still creating the commit. After every `git commit` in this
+  workflow, check `git log --oneline -1` and `git status --porcelain` rather than trusting
+  the exit code, and report the message that actually landed.
